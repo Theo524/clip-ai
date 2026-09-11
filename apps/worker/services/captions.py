@@ -10,18 +10,22 @@ STYLE_CONFIG = {
     "viral": {
         "font": "Trebuchet MS",
         "size": 58,
-        "max_words": 4,
-        "max_chars": 28,
+        "max_words": 5,
+        "max_chars": 31,
+        "max_duration": 2.7,
+        "pause_break": 0.46,
         "primary": "&H00FFFFFF",
-        "active": "&H0048E8FF",  # warm yellow in ASS BGR order
+        "active": "&H0048E8FF",
         "outline": 5,
         "shadow": 2,
     },
     "cinematic": {
         "font": "Segoe UI Semibold",
         "size": 38,
-        "max_words": 8,
-        "max_chars": 46,
+        "max_words": 10,
+        "max_chars": 52,
+        "max_duration": 4.4,
+        "pause_break": 0.72,
         "primary": "&H00FFFFFF",
         "active": "&H00FFFFFF",
         "outline": 2,
@@ -30,8 +34,10 @@ STYLE_CONFIG = {
     "clean": {
         "font": "Arial",
         "size": 44,
-        "max_words": 7,
-        "max_chars": 40,
+        "max_words": 8,
+        "max_chars": 44,
+        "max_duration": 3.6,
+        "pause_break": 0.62,
         "primary": "&H00FFFFFF",
         "active": "&H00FFFFFF",
         "outline": 3,
@@ -42,12 +48,22 @@ STYLE_CONFIG = {
         "size": 54,
         "max_words": 5,
         "max_chars": 32,
+        "max_duration": 2.8,
+        "pause_break": 0.46,
         "primary": "&H00FFFFFF",
-        "active": "&H0000D7FF",  # orange/yellow accent
+        "active": "&H0000D7FF",
         "outline": 5,
         "shadow": 1,
     },
 }
+
+_FILLER_WORDS = {"um", "uh", "erm", "er", "hmm", "mm", "uhm"}
+_WEAK_EDGE_WORDS = {
+    "and", "but", "or", "so", "because", "if", "then", "that", "which", "who",
+    "to", "of", "for", "with", "at", "from", "by", "as", "a", "an", "the",
+}
+_SENTENCE_END = re.compile(r"[.!?][\"')\]]?$")
+_CLAUSE_END = re.compile(r"[,;:][\"')\]]?$")
 
 
 @dataclass
@@ -55,6 +71,7 @@ class WordCue:
     start: float
     end: float
     text: str
+    probability: float | None = None
 
 
 @dataclass
@@ -70,8 +87,12 @@ class PhraseCue:
         return self.words[-1].end
 
     @property
+    def duration(self) -> float:
+        return max(0.0, self.end - self.start)
+
+    @property
     def text(self) -> str:
-        return " ".join(word.text for word in self.words)
+        return _join_words(self.words)
 
 
 def _ass_time(seconds: float) -> str:
@@ -93,6 +114,28 @@ def _escape_ass(text: str) -> str:
         .replace("}", r"\}")
         .replace("\n", r"\N")
     )
+
+
+def _join_word_texts(parts: list[str]) -> str:
+    """Join Whisper word tokens without spaces before punctuation."""
+    output = ""
+    for raw in parts:
+        token = _clean_text(raw)
+        if not token:
+            continue
+        if not output:
+            output = token
+        elif re.match(r"^[,.;:!?%)}\]]", token):
+            output += token
+        elif output.endswith(("'", "’", "-", "—", "(")):
+            output += token
+        else:
+            output += " " + token
+    return output.strip()
+
+
+def _join_words(words: list[WordCue]) -> str:
+    return _join_word_texts([word.text for word in words])
 
 
 def _split_text(text: str, max_words: int, max_chars: int) -> list[str]:
@@ -121,30 +164,30 @@ def _caption_position(
     width: int,
     height: int,
     caption_zone: str = "auto",
+    platform: str = "auto",
 ) -> tuple[int, int]:
-    """Place every caption inside the actual picture area, never in margins."""
+    """Place captions inside the picture and nudge them away from platform UI."""
     x = width // 2
     zone = (caption_zone or "auto").lower().strip()
     if zone not in {"upper", "middle", "lower"}:
-        if style in {"viral", "meme"}:
-            zone = "middle"
-        else:
-            zone = "lower"
+        zone = "middle" if style in {"viral", "meme"} else "lower"
 
-    # These ratios are relative to the *picture* rather than the 9:16 canvas.
-    # Cinematic lower captions stay safely inside the picture instead of drifting
-    # into the dark Focus margins.
-    ratios = {
-        "upper": 0.34,
-        "middle": 0.62,
-        "lower": 0.85,
-    }
+    ratios = {"upper": 0.34, "middle": 0.61, "lower": 0.85}
     ratio = ratios[zone]
+
+    platform = (platform or "auto").lower().strip()
+    # Lower captions are the ones most likely to collide with app chrome.
+    if zone == "lower":
+        if platform == "tiktok":
+            ratio = min(ratio, 0.77)
+        elif platform == "shorts":
+            ratio = min(ratio, 0.79)
+        elif platform == "reels":
+            ratio = min(ratio, 0.80)
 
     if layout in {"focus", "backdrop"}:
         _wx, top, _ww, window_h = content_window(frame_size, width, height)
-        y = int(top + window_h * ratio)
-        return x, y
+        return x, int(top + window_h * ratio)
 
     return x, int(height * ratio)
 
@@ -156,16 +199,13 @@ def _cue_override(
     width: int,
     height: int,
     caption_zone: str = "auto",
+    platform: str = "auto",
     *,
     phrase_transition: bool = True,
 ) -> str:
-    x, y = _caption_position(style, layout, frame_size, width, height, caption_zone)
+    x, y = _caption_position(style, layout, frame_size, width, height, caption_zone, platform)
     pos = fr"\an2\pos({x},{y})"
-    # Phrase-level entry/exit only. Word changes never restart these transitions.
     if not phrase_transition:
-        # Word-to-word changes stay at exactly the same anchor. The pop now comes
-        # from a small scale transform on the active word itself, not from moving
-        # a second text layer around the screen.
         return "{" + pos + "}"
     if style == "viral":
         return "{" + pos + r"\fad(45,70)}"
@@ -174,6 +214,7 @@ def _cue_override(
     if style == "cinematic":
         return "{" + pos + r"\fad(90,130)}"
     return "{" + pos + r"\fad(55,70)}"
+
 
 def _style_line(style: str) -> str:
     cfg = STYLE_CONFIG[style]
@@ -197,6 +238,17 @@ def _dedupe_words(words: list[TranscriptWord]) -> list[TranscriptWord]:
     return output
 
 
+def _looks_like_bad_token(text: str, probability: float | None) -> bool:
+    clean = re.sub(r"[^A-Za-z0-9']", "", text).lower()
+    if not clean:
+        return False
+    if probability is not None and probability < 0.05 and len(clean) <= 2:
+        return True
+    if probability is not None and probability < 0.16 and clean in _FILLER_WORDS:
+        return True
+    return False
+
+
 def _words_in_clip(
     segments: list[TranscriptSegment],
     clip_start: float,
@@ -216,33 +268,75 @@ def _words_in_clip(
         if absolute_end <= absolute_start:
             continue
         text = _clean_text(word.text)
-        if not text:
+        if not text or _looks_like_bad_token(text, word.probability):
             continue
-        start = absolute_start - clip_start + offset_seconds
-        end = absolute_end - clip_start + offset_seconds
-        # An offset can push the first/last word outside the cut; clamp rather than
-        # dropping all following timing information.
-        start = max(0.0, start)
-        end = min(max(clip_end - clip_start, 0.05), end)
+        start = max(0.0, absolute_start - clip_start + offset_seconds)
+        end = min(max(clip_end - clip_start, 0.05), absolute_end - clip_start + offset_seconds)
         if end > start + 0.015:
-            cues.append(WordCue(start=start, end=end, text=text))
+            cues.append(WordCue(start=start, end=end, text=text, probability=word.probability))
     return cues
 
 
-def _make_phrases(words: list[WordCue], max_words: int, max_chars: int) -> list[PhraseCue]:
+def _is_weak_edge(word: WordCue) -> bool:
+    clean = re.sub(r"[^A-Za-z']", "", word.text).lower()
+    return clean in _WEAK_EDGE_WORDS
+
+
+def _rebalance_phrases(phrases: list[PhraseCue], max_words: int, max_chars: int) -> list[PhraseCue]:
+    """Avoid ugly one-word leftovers and obvious connective fragments."""
+    if len(phrases) <= 1:
+        return phrases
+
+    # Pull a dangling connective from the end of a phrase into the following one.
+    for index in range(len(phrases) - 1):
+        current = phrases[index]
+        nxt = phrases[index + 1]
+        if len(current.words) >= 2 and _is_weak_edge(current.words[-1]):
+            candidate = [current.words[-1], *nxt.words]
+            if len(candidate) <= max_words and len(_join_words(candidate)) <= max_chars:
+                moved = current.words.pop()
+                nxt.words.insert(0, moved)
+
+    # Merge a tiny final fragment into the previous phrase when it still fits.
+    if len(phrases) >= 2 and len(phrases[-1].words) <= 2:
+        previous = phrases[-2]
+        tail = phrases[-1]
+        candidate = [*previous.words, *tail.words]
+        if len(candidate) <= max_words + 2 and len(_join_words(candidate)) <= max_chars + 8:
+            phrases[-2] = PhraseCue(candidate)
+            phrases.pop()
+
+    return [phrase for phrase in phrases if phrase.words]
+
+
+def _make_phrases(words: list[WordCue], style: str) -> list[PhraseCue]:
     if not words:
         return []
+
+    cfg = STYLE_CONFIG[style]
+    max_words = int(cfg["max_words"])
+    max_chars = int(cfg["max_chars"])
+    max_duration = float(cfg["max_duration"])
+    pause_break = float(cfg["pause_break"])
 
     phrases: list[PhraseCue] = []
     current: list[WordCue] = []
     for word in words:
-        candidate_text = " ".join([*(item.text for item in current), word.text])
         previous = current[-1] if current else None
-        long_pause = previous is not None and word.start - previous.end > 0.55
-        sentence_break = previous is not None and bool(re.search(r"[.!?][\"')\]]?$", previous.text))
-        too_large = bool(current) and (len(current) >= max_words or len(candidate_text) > max_chars)
+        candidate = [*current, word]
+        candidate_text = _join_words(candidate)
+        long_pause = previous is not None and word.start - previous.end > pause_break
+        sentence_break = previous is not None and bool(_SENTENCE_END.search(previous.text))
+        clause_break = (
+            previous is not None
+            and bool(_CLAUSE_END.search(previous.text))
+            and word.start - previous.end > 0.20
+            and len(current) >= 3
+        )
+        too_large = bool(current) and (len(candidate) > max_words or len(candidate_text) > max_chars)
+        too_long = bool(current) and (word.end - current[0].start > max_duration)
 
-        if current and (long_pause or sentence_break or too_large):
+        if current and (long_pause or sentence_break or clause_break or too_large or too_long):
             phrases.append(PhraseCue(words=current))
             current = [word]
         else:
@@ -250,26 +344,16 @@ def _make_phrases(words: list[WordCue], max_words: int, max_chars: int) -> list[
 
     if current:
         phrases.append(PhraseCue(words=current))
-    return phrases
+
+    return _rebalance_phrases(phrases, max_words, max_chars)
 
 
 def _styled_phrase_text(phrase: PhraseCue, active_index: int, style: str) -> str:
-    """Render one complete phrase with a single active word.
-
-    Earlier builds used a persistent base phrase plus a second moving active-word
-    layer. That made the base word peek out when the highlighted word scaled or
-    moved. Milestone 11 uses exactly one visible text layer at a time instead.
-    The phrase is redrawn at identical coordinates with no per-word fade, so the
-    only intentional visual change is the active word's colour/pop treatment.
-    """
     cfg = STYLE_CONFIG[style]
     output: list[str] = []
     for index, word in enumerate(phrase.words):
         text = _escape_ass(word.text.upper() if style == "meme" else word.text)
         if index == active_index:
-            # Keep the pop modest so neighbouring words barely reflow. The two
-            # short transforms create a quick grow-and-settle effect without a
-            # second copy of the word underneath it.
             text = (
                 r"{\c" + str(cfg["active"])
                 + r"\bord6\shad2\fscx100\fscy100"
@@ -279,7 +363,10 @@ def _styled_phrase_text(phrase: PhraseCue, active_index: int, style: str) -> str
                 + r"\bord5\shad2\fscx100\fscy100}"
             )
         output.append(text)
+    # Joining ASS-decorated tokens with spaces is safe because punctuation normally
+    # arrives attached to the word token from faster-whisper.
     return " ".join(output)
+
 
 def _fallback_segment_cues(
     segments: list[TranscriptSegment],
@@ -290,7 +377,6 @@ def _fallback_segment_cues(
     max_chars: int,
     offset_seconds: float,
 ) -> list[tuple[float, float, str]]:
-    """Compatibility path for jobs created before Milestone 8."""
     cues: list[tuple[float, float, str]] = []
     clip_duration = max(clip_end - clip_start, 0.05)
     for segment in segments:
@@ -327,19 +413,16 @@ def write_clip_ass(
     height: int = 1280,
     caption_offset_ms: int = 0,
     caption_zone: str = "auto",
+    platform: str = "auto",
 ) -> tuple[str, bool]:
-    """Write in-frame ASS captions using exact word timing when available.
-
-    Returns ``(path, word_timed)`` so the API/UI can report whether the freshly
-    analysed transcript supplied real word timestamps or used the legacy fallback.
-    """
+    """Write readable in-frame ASS captions with exact word timing when available."""
     style = caption_style if caption_style in STYLE_CONFIG else "clean"
     frame_size = normalize_frame_size(frame_size)
     cfg = STYLE_CONFIG[style]
     offset_seconds = caption_offset_ms / 1000.0
 
     words = _words_in_clip(segments, clip_start, clip_end, offset_seconds)
-    phrases = _make_phrases(words, int(cfg["max_words"]), int(cfg["max_chars"]))
+    phrases = _make_phrases(words, style)
     word_timed = bool(phrases)
 
     header = f"""[Script Info]
@@ -358,18 +441,15 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 """
     lines = [header.rstrip()]
     phrase_override = _cue_override(
-        style, layout_mode, frame_size, width, height, caption_zone, phrase_transition=True
+        style, layout_mode, frame_size, width, height, caption_zone, platform, phrase_transition=True
     )
     stable_override = _cue_override(
-        style, layout_mode, frame_size, width, height, caption_zone, phrase_transition=False
+        style, layout_mode, frame_size, width, height, caption_zone, platform, phrase_transition=False
     )
 
     if word_timed:
         for phrase in phrases:
             if style in {"viral", "meme"}:
-                # Exactly one visible phrase event at any instant. Keep each event
-                # alive until the next word starts, so small Whisper gaps never
-                # make the phrase blink. No base/overlay duplication is used.
                 for index, word in enumerate(phrase.words):
                     cue_start = word.start
                     if index + 1 < len(phrase.words):

@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 
 from models import AnalyzeRequest, AnalyzeResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ProjectDetail, ProjectSummary, RenderClipRequest, RenderClipResponse, TranscriptSegment, YouTubeInfoResponse
 from settings import settings
-from services.media import cut_clip, extract_audio_chunks, render_adaptive_short
+from services.media import cut_clip, extract_audio_chunks, extract_cover_frame, render_adaptive_short
 from services.captions import write_clip_ass
 from services.mock import mock_clips
 from services.reframe import load_reframe_plan, plan_smart_reframe, save_reframe_plan
@@ -21,7 +21,7 @@ from services.layouts import choose_caption_style, choose_caption_zone, choose_l
 from services.projects import directory_size, load_project, rendered_media, save_project
 from services.copywriter import dialogue_for_range, generate_clip_copy_local
 
-app = FastAPI(title="Clip AI Worker", version="0.15.0")
+app = FastAPI(title="Clip AI Worker", version="0.16.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -535,7 +535,7 @@ def render_short(request: RenderClipRequest):
 
     start_ms = round(request.start * 1000)
     end_ms = round(request.end * 1000)
-    plan_filename = f"reframe_v9_{start_ms}_{end_ms}.json"
+    plan_filename = f"reframe_v16_{start_ms}_{end_ms}.json"
     plan_path = clips_dir / plan_filename
 
     try:
@@ -557,8 +557,8 @@ def render_short(request: RenderClipRequest):
         caption_zone = choose_caption_zone(caption_style, layout_mode, reframe_plan)
 
         offset_tag = f"p{request.caption_offset_ms}" if request.caption_offset_ms >= 0 else f"m{abs(request.caption_offset_ms)}"
-        filename = f"short_v9_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.mp4"
-        subtitle_filename = f"captions_v9_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.ass"
+        filename = f"short_v16_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.mp4"
+        subtitle_filename = f"captions_v16_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.ass"
         output = clips_dir / filename
         subtitles = clips_dir / subtitle_filename
 
@@ -574,6 +574,7 @@ def render_short(request: RenderClipRequest):
             height=1280,
             caption_offset_ms=request.caption_offset_ms,
             caption_zone=caption_zone,
+            platform=request.platform,
         )
 
         if not output.exists() or output.stat().st_size == 0:
@@ -589,6 +590,13 @@ def render_short(request: RenderClipRequest):
                 width=720,
                 height=1280,
             )
+
+        cover_filename = f"cover_v16_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{start_ms}_{end_ms}.jpg"
+        cover_path = clips_dir / cover_filename
+        if not cover_path.exists() or cover_path.stat().st_size == 0:
+            # Around one third into the clip usually avoids cold opens while still
+            # reflecting the selected moment. The user can later choose covers manually.
+            extract_cover_frame(str(output), str(cover_path), max(0.15, (request.end - request.start) * 0.34))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Short render failed: {exc}") from exc
 
@@ -618,6 +626,8 @@ def render_short(request: RenderClipRequest):
         caption_offset_ms=request.caption_offset_ms,
         word_timed_captions=word_timed,
         caption_zone=caption_zone,
+        platform=request.platform,
+        cover_url=f"/media/{request.job_id}/{cover_filename}",
     )
 
 
@@ -628,15 +638,16 @@ def media_file(
     download: bool = Query(default=False),
     name: str | None = Query(default=None, max_length=140),
 ):
-    if not SAFE_FILENAME.fullmatch(filename) or not filename.lower().endswith(".mp4"):
+    suffix = Path(filename).suffix.lower()
+    if not SAFE_FILENAME.fullmatch(filename) or suffix not in {".mp4", ".jpg", ".jpeg", ".png"}:
         raise HTTPException(status_code=400, detail="Invalid media filename.")
 
     path = _job_dir(job_id) / "clips" / filename
     if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="Rendered clip not found.")
+        raise HTTPException(status_code=404, detail="Rendered media not found.")
 
-    return FileResponse(
-        path,
-        media_type="video/mp4",
-        filename=safe_download_name(name, path.stem) if download else None,
-    )
+    media_types = {".mp4": "video/mp4", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+    response_name = None
+    if download:
+        response_name = safe_download_name(name, path.stem) if suffix == ".mp4" else (name or path.name)
+    return FileResponse(path, media_type=media_types[suffix], filename=response_name)

@@ -1,73 +1,42 @@
-# Clip AI architecture — Milestone 15
+# Clip AI v16 architecture
 
-## Inputs
+```text
+Upload / authorised YouTube project
+            ↓
+FFmpeg audio extraction
+            ↓
+faster-whisper (segment + word timestamps + confidence)
+            ↓
+local/OpenAI clip ranking
+            ↓
+smart title + social caption
+            ↓
+subject-aware reframe plan
+            ↓
+caption phrase engine
+  - punctuation + pause boundaries
+  - style-specific phrase lengths
+  - dangling-fragment rebalance
+  - low-confidence filler filtering
+  - exact word highlighting
+            ↓
+platform safe-zone adjustment
+            ↓
+FFmpeg 9:16 render
+            ↓
+suggested cover-frame extraction
+            ↓
+projects/history + ready-to-post panel
+```
 
-### Your video
-A local video upload is saved into a per-project work directory and processed directly.
+## Caption philosophy
 
-### YouTube link
-The worker validates the URL and uses YouTube oEmbed for public title/channel/thumbnail metadata. The user supplies an authorised local source file for the actual processing. The YouTube identity stays attached to the saved project.
+Caption timing remains grounded in Whisper word timestamps. v16 does not rewrite spoken dialogue with a language model; it only chooses which reliable tokens to display together and where phrase boundaries should fall. Very low-confidence filler/noise tokens can be hidden, but substantive words are preserved.
 
-## Processing pipeline
+## Platform presets
 
-source video
-→ FFmpeg audio chunks
-→ faster-whisper word-level transcript
-→ local/OpenAI ranking backend
-→ suggested moments
-→ dialogue-grounded title/social-copy generation
-→ lightweight visual sampling
-→ adaptive layout plan
-→ ASS caption generation
-→ FFmpeg final render
-→ ready-to-post export handoff
+Shorts, TikTok and Reels all still export 720×1280 locally. The preset primarily changes lower-caption safe zones to reduce collisions with platform interface chrome.
 
-## Ready-to-post export
+## Cover frames
 
-The worker stores rendered files under stable internal cache names so repeated renders can be reused. The frontend presents a cleaner export layer on top:
-
-- title preview
-- editable project-backed title/social caption
-- clipboard actions
-- human-readable MP4 filename
-- one obvious Short download action
-
-`GET /media/{job_id}/{filename}?download=true&name=<title>` keeps the internal media path unchanged while returning a safe browser download filename derived from `name`.
-
-## Dialogue-based copy
-
-`services/copywriter.py` reconstructs only the transcript text overlapping a selected clip. It produces:
-
-- a concise clip title
-- a social post caption
-- Auto / Viral / Clean / Cinematic variants
-
-The UI can regenerate or manually edit both fields. Saved edits are written into the project's clip metadata.
-
-### Copy endpoints
-
-- `POST /projects/{job_id}/clips/{clip_index}/generate-copy` — regenerate title/social caption from that clip's dialogue
-- `PATCH /projects/{job_id}/clips/{clip_index}/copy` — save manual title/social-caption edits
-
-## Persistent project storage
-
-`apps/worker/work/<job_id>/` can contain:
-
-- `project.json` — project identity, source type, clip suggestions, titles/social captions and timestamps
-- `source.<ext>` — original source video
-- `youtube_source.json` — YouTube source reference when relevant
-- `audio/` — temporary/extracted audio chunks
-- `transcript.json` — word-timestamped transcript
-- `clips/` — generated Shorts, original cuts, subtitles and reframe plans
-
-The entire `work/` directory is ignored by Git.
-
-## Project endpoints
-
-- `GET /projects` — saved project summaries, render counts and storage use
-- `GET /projects/{job_id}` — saved clip suggestions plus existing render files
-- `DELETE /projects/{job_id}` — removes the entire local project directory
-
-## Future hosted version
-
-The current project index is intentionally file-based for local development. A hosted version can move project metadata into PostgreSQL/Supabase and media into object storage while keeping the processing worker interface largely unchanged.
+After rendering a Short, FFmpeg extracts a JPEG at roughly 34% into the finished clip. This is a suggested cover preview, not yet a full automatic thumbnail-ranking system.

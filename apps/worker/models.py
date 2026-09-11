@@ -72,6 +72,7 @@ class RenderClipRequest(BaseModel):
     caption_style: Literal["auto", "viral", "cinematic", "clean", "meme"] = "auto"
     frame_size: Literal["compact", "balanced", "immersive"] = "balanced"
     caption_offset_ms: int = Field(default=0, ge=-1000, le=1000)
+    platform: Literal["auto", "shorts", "tiktok", "reels"] = "auto"
 
 
 class RenderClipResponse(BaseModel):
@@ -95,6 +96,8 @@ class RenderClipResponse(BaseModel):
     caption_offset_ms: int | None = None
     word_timed_captions: bool | None = None
     caption_zone: str | None = None
+    platform: str | None = None
+    cover_url: str | None = None
 
 
 class SavedRender(BaseModel):

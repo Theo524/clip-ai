@@ -100,3 +100,57 @@ def test_legacy_segment_transcript_still_renders(tmp_path: Path):
     text = Path(path).read_text(encoding="utf-8-sig")
     assert word_timed is False
     assert "Legacy timing" in text
+
+
+def test_caption_phrasing_avoids_dangling_final_connector(tmp_path: Path):
+    segments = [
+        TranscriptSegment(
+            start=0.0,
+            end=3.0,
+            text="I tried it and it actually worked",
+            words=[
+                TranscriptWord(start=0.0, end=0.3, text="I"),
+                TranscriptWord(start=0.31, end=0.7, text="tried"),
+                TranscriptWord(start=0.71, end=0.9, text="it"),
+                TranscriptWord(start=0.91, end=1.05, text="and"),
+                TranscriptWord(start=1.06, end=1.25, text="it"),
+                TranscriptWord(start=1.26, end=1.8, text="actually"),
+                TranscriptWord(start=1.81, end=2.3, text="worked"),
+            ],
+        )
+    ]
+    target = tmp_path / "phrasing.ass"
+    path, timed = write_clip_ass(segments, 0.0, 3.0, str(target), caption_style="viral")
+    text = Path(path).read_text(encoding="utf-8-sig")
+    assert timed is True
+    assert "and\\N" not in text
+    assert "actually" in text
+
+
+def test_tiktok_lower_safe_zone_moves_caption_up(tmp_path: Path):
+    segments = [
+        TranscriptSegment(
+            start=0.0,
+            end=1.0,
+            text="Safe zone",
+            words=[
+                TranscriptWord(start=0.0, end=0.4, text="Safe"),
+                TranscriptWord(start=0.45, end=0.9, text="zone"),
+            ],
+        )
+    ]
+    target = tmp_path / "tiktok.ass"
+    path, _ = write_clip_ass(
+        segments,
+        0.0,
+        1.0,
+        str(target),
+        caption_style="cinematic",
+        layout_mode="focus",
+        frame_size="balanced",
+        caption_zone="lower",
+        platform="tiktok",
+    )
+    text = Path(path).read_text(encoding="utf-8-sig")
+    # Balanced window is y=190..1090; TikTok lower safe zone uses 77% -> 883.
+    assert "\\pos(360,883)" in text

@@ -55,6 +55,7 @@ type ProjectDetail = {
 type LayoutMode = "auto" | "fill" | "focus" | "backdrop" | "preserve";
 type CaptionStyle = "auto" | "viral" | "cinematic" | "clean" | "meme";
 type FrameSize = "compact" | "balanced" | "immersive";
+type Platform = "auto" | "shorts" | "tiktok" | "reels";
 type CopyStyle = "auto" | "viral" | "clean" | "cinematic";
 
 type RenderResponse = {
@@ -78,6 +79,8 @@ type RenderResponse = {
   caption_offset_ms?: number | null;
   word_timed_captions?: boolean | null;
   caption_zone?: "upper" | "middle" | "lower" | null;
+  platform?: Platform | null;
+  cover_url?: string | null;
 };
 
 type Mode = "upload" | "youtube";
@@ -116,6 +119,13 @@ function captionLabel(style?: RenderResponse["caption_style"]) {
   if (style === "cinematic") return "Cinematic";
   if (style === "meme") return "Meme";
   return "Clean";
+}
+
+function platformLabel(platform?: Platform | null) {
+  if (platform === "tiktok") return "TikTok";
+  if (platform === "reels") return "Instagram Reels";
+  if (platform === "shorts") return "YouTube Shorts";
+  return "Auto platform safe-zone";
 }
 
 function captionZoneLabel(zone?: RenderResponse["caption_zone"]) {
@@ -157,6 +167,7 @@ export default function Home() {
   const [captions, setCaptions] = useState<Record<number, CaptionStyle>>({});
   const [frameSizes, setFrameSizes] = useState<Record<number, FrameSize>>({});
   const [captionOffsets, setCaptionOffsets] = useState<Record<number, number>>({});
+  const [platforms, setPlatforms] = useState<Record<number, Platform>>({});
   const [openedProjectTitle, setOpenedProjectTitle] = useState<string | null>(null);
   const [savedRenders, setSavedRenders] = useState<SavedRender[]>([]);
   const [copyStyles, setCopyStyles] = useState<Record<number, CopyStyle>>({});
@@ -204,6 +215,7 @@ export default function Home() {
     setCaptions({});
     setFrameSizes({});
     setCaptionOffsets({});
+    setPlatforms({});
     setSavedRenders([]);
     setCopyStyles({});
     setCopySaved(null);
@@ -261,6 +273,7 @@ export default function Home() {
     setCaptions({});
     setFrameSizes({});
     setCaptionOffsets({});
+    setPlatforms({});
 
     try {
       const form = new FormData();
@@ -372,6 +385,7 @@ export default function Home() {
         body.caption_style = captions[index] || "auto";
         body.frame_size = frameSizes[index] || "balanced";
         body.caption_offset_ms = captionOffsets[index] || 0;
+        body.platform = platforms[index] || "auto";
       }
 
       const res = await fetch(`${workerUrl}${endpoint}`, {
@@ -417,7 +431,7 @@ export default function Home() {
         <a className="brand brandLink" href="/">Clip AI</a>
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
-          <div className="badge">Milestone 15 · ready to post</div>
+          <div className="badge">v16 · caption quality + export polish</div>
         </div>
       </nav>
 
@@ -607,6 +621,7 @@ export default function Home() {
                 const selectedCaption = captions[index] || "auto";
                 const selectedFrameSize = frameSizes[index] || "balanced";
                 const selectedOffset = captionOffsets[index] || 0;
+                const selectedPlatform = platforms[index] || "auto";
 
                 return (
                   <article className="clipCard" key={`${clip.start}-${index}`}>
@@ -707,6 +722,19 @@ export default function Home() {
                           <div className="customizeBody">
                             <div className="renderOptions">
                               <label>
+                                <span>Posting to <i>Adjusts caption safe-zones</i></span>
+                                <select
+                                  value={selectedPlatform}
+                                  onChange={(e) => setPlatforms((current) => ({ ...current, [index]: e.target.value as Platform }))}
+                                  disabled={rendering !== null}
+                                >
+                                  <option value="auto">Auto · recommended</option>
+                                  <option value="shorts">YouTube Shorts</option>
+                                  <option value="tiktok">TikTok</option>
+                                  <option value="reels">Instagram Reels</option>
+                                </select>
+                              </label>
+                              <label>
                                 <span>Framing <i>How the picture fits</i></span>
                                 <select
                                   value={selectedLayout}
@@ -790,11 +818,15 @@ export default function Home() {
                             </div>
 
                             <div className="readyPostGrid">
-                              <div className="thumbnailPreview" aria-label="Simple title preview">
-                                <video muted playsInline preload="metadata" src={playableUrl} />
+                              <div className="thumbnailPreview" aria-label="Suggested cover preview">
+                                {renderedClip.cover_url ? (
+                                  <img src={`${workerUrl}${renderedClip.cover_url}`} alt="Suggested cover frame" />
+                                ) : (
+                                  <video muted playsInline preload="metadata" src={playableUrl} />
+                                )}
                                 <div className="thumbnailShade" />
                                 <div className="thumbnailTitle">{clip.title}</div>
-                                <span>Title preview</span>
+                                <span>Suggested cover</span>
                               </div>
 
                               <div className="readyCopyStack">
@@ -844,7 +876,7 @@ export default function Home() {
                             <details className="exportDetails">
                               <summary>Technical details</summary>
                               <p>
-                                {Math.round(renderedClip.duration)} sec · {layoutLabel(renderedClip.layout_mode)} · {frameSizeLabel(renderedClip.frame_size)} · {captionLabel(renderedClip.caption_style)} · {renderedClip.word_timed_captions ? "word-synced" : "legacy timing"} · {captionZoneLabel(renderedClip.caption_zone)} · {framingLabel(renderedClip.framing_mode)}
+                                {Math.round(renderedClip.duration)} sec · {platformLabel(renderedClip.platform)} · {layoutLabel(renderedClip.layout_mode)} · {frameSizeLabel(renderedClip.frame_size)} · {captionLabel(renderedClip.caption_style)} · {renderedClip.word_timed_captions ? "word-synced" : "legacy timing"} · {captionZoneLabel(renderedClip.caption_zone)} · {framingLabel(renderedClip.framing_mode)}
                               </p>
                             </details>
                           </section>
@@ -860,7 +892,7 @@ export default function Home() {
                 );
               })}
             </div>
-            <div className="footNote">Milestone 15 turns each finished Short into a ready-to-post handoff with copy buttons, a title preview, a clean filename, and one obvious download action.</div>
+            <div className="footNote">v16 improves caption phrasing, adds platform-aware safe-zones, and extracts a suggested cover frame for every rendered Short.</div>
           </section>
         )}
       </main>

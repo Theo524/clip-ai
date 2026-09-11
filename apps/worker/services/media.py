@@ -186,6 +186,26 @@ def render_adaptive_short(
     return str(target)
 
 
+
+def extract_cover_frame(media_path: str, output_path: str, at_seconds: float) -> str:
+    """Extract a JPEG cover frame from an already-rendered Short."""
+    require_ffmpeg()
+    source = Path(media_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Media file not found: {source}")
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", f"{max(0.0, at_seconds):.3f}",
+        "-i", str(source),
+        "-frames:v", "1",
+        "-q:v", "2",
+        str(target),
+    ]
+    _run_render(command, target, "extract the cover frame")
+    return str(target)
+
 def _run_render(command: list[str], target: Path, action: str, cwd: Path | None = None) -> None:
     completed = subprocess.run(command, capture_output=True, text=True, cwd=str(cwd) if cwd else None)
     if completed.returncode != 0:
