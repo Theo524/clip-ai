@@ -1,13 +1,8 @@
-.env
-.env.*
-!.env.example
-!.env.local.example
-.venv/
-**/.venv/
 node_modules/
-**/node_modules/
 .next/
-**/.next/
+.venv/
 __pycache__/
-**/__pycache__/
 *.pyc
+.env
+.env.local
+work/

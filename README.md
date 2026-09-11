@@ -1,87 +1,83 @@
-# Clip AI — Milestone 1
+# Clip AI — Milestone 2
 
-A starter implementation for an AI long-form-to-shorts product.
+This build adds **real local video analysis**.
 
-Current vertical slice:
+## What works
 
-1. Paste a YouTube URL in the web UI.
-2. The web app sends it to the processing worker.
-3. The worker returns ranked short-form clip suggestions with timestamps, titles, hooks and scores.
-4. `MOCK_MODE=true` works immediately without API keys or media ingestion.
-5. Real mode can analyze a local/authorized media file: FFmpeg extracts audio, OpenAI transcribes it, and an OpenAI model ranks clip-worthy moments.
+- YouTube URL demo mode (same as Milestone 1)
+- Upload an MP4/MOV/MKV/WEBM/M4V/AVI file
+- FFmpeg extracts audio into podcast-friendly chunks
+- OpenAI timestamped transcription
+- AI ranks the best 20–60 second moments
+- Real timestamps, titles, hooks, scores and reasons appear in the web UI
 
-> The repo intentionally does **not** include an unofficial YouTube downloader. For production, connect an authorised/owned-media import path (YouTube-authorised access, creator upload, cloud storage import, etc.) to the `MediaImporter` boundary.
+The upload flow is intended for video you own or are authorised to use.
 
-## Architecture
+## Windows setup
 
-```text
-Next.js web UI
-    |
-    | POST /api/analyze
-    v
-FastAPI worker
-    |
-    +-- media import boundary (mock for now)
-    +-- FFmpeg audio extraction
-    +-- speech-to-text with timestamps
-    +-- AI clip ranking
-    +-- later: crop/face tracking/captions/rendering
+### A. Check FFmpeg
+
+Open Command Prompt and run:
+
+```bat
+ffmpeg -version
 ```
 
-## Run locally
+If Windows says it cannot find `ffmpeg`, install FFmpeg first and ensure the command works before continuing.
 
-### 1) Worker
+### B. Worker
 
-```bash
-cd apps/worker
+```bat
+cd apps\worker
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\\Scripts\\activate
+.venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
-uvicorn main:app --reload --port 8000
+copy .env.example .env
 ```
 
-The default `.env.example` uses `MOCK_MODE=true`, so it runs without an OpenAI key.
-
-### 2) Web app
-
-```bash
-cd apps/web
-npm install
-cp .env.local.example .env.local
-npm run dev
-```
-
-Open http://localhost:3000.
-
-## Real analysis of an authorised local video
-
-Set in `apps/worker/.env`:
+Open `apps\worker\.env` and change:
 
 ```env
 MOCK_MODE=false
-OPENAI_API_KEY=...
+OPENAI_API_KEY=your_key_here
 ```
 
-Then POST directly to the worker with a file that exists on the worker machine:
+Do not share your API key in chat or commit it to Git.
 
-```bash
-curl -X POST http://localhost:8000/analyze \
-  -H 'content-type: application/json' \
-  -d '{
-    "source_url":"https://www.youtube.com/watch?v=example",
-    "local_media_path":"/absolute/path/to/video.mp4",
-    "max_clips":5
-  }'
+Then start the worker:
+
+```bat
+uvicorn main:app --reload --port 8000
 ```
 
-This is the seam where the authorised YouTube/media importer will plug in next.
+Optional health check in a browser:
+
+```text
+http://127.0.0.1:8000/health
+```
+
+You want `api_key_configured: true` and `ffmpeg_available: true`.
+
+### C. Web app
+
+In another Command Prompt:
+
+```bat
+cd apps\web
+npm install
+copy .env.local.example .env.local
+npm run dev
+```
+
+Open `http://localhost:3000`, choose **Upload video · real**, select a short test video, and click **Analyze real video**.
+
+Start with a 5–15 minute talking-head video while testing. Long-video chunking is already included, but short files make debugging much faster.
 
 ## Next milestone
 
-- Authorised media import / creator upload
-- Background jobs + progress states
-- Automatic MP4 cutting with FFmpeg
-- 9:16 smart crop / face tracking
-- Word-level animated captions
-- Download/export screen
+Take one returned timestamp and automatically:
+
+1. cut the original video,
+2. smart-crop it to 9:16,
+3. generate word-level captions,
+4. render a playable MP4.
