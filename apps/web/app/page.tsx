@@ -71,13 +71,16 @@ type RenderResponse = {
   kind?: "original" | "short";
   width?: number | null;
   height?: number | null;
-  framing_mode?: "face" | "motion" | "center" | "portrait" | null;
+  framing_mode?: "speaker" | "face" | "motion" | "center" | "portrait" | null;
   layout_mode?: "fill" | "focus" | "backdrop" | "preserve" | null;
   caption_style?: "viral" | "cinematic" | "clean" | "meme" | null;
   frame_size?: "compact" | "balanced" | "immersive" | null;
   tracking_samples?: number | null;
   face_samples?: number | null;
   motion_samples?: number | null;
+  active_speaker_samples?: number | null;
+  active_speaker_switches?: number | null;
+  group_fallback_samples?: number | null;
   caption_offset_ms?: number | null;
   word_timed_captions?: boolean | null;
   caption_zone?: "upper" | "middle" | "lower" | null;
@@ -97,6 +100,7 @@ function fmt(seconds: number) {
 }
 
 function framingLabel(mode?: RenderResponse["framing_mode"]) {
+  if (mode === "speaker") return "active-speaker aware";
   if (mode === "face") return "face-aware";
   if (mode === "motion") return "motion-aware";
   if (mode === "portrait") return "portrait-preserved";
@@ -468,7 +472,7 @@ export default function Home() {
         <a className="brand brandLink" href="/">Clip AI</a>
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
-          <div className="badge">v17 · smarter picks + batch Auto</div>
+          <div className="badge">v18 · active-speaker framing</div>
         </div>
       </nav>
 
@@ -600,7 +604,7 @@ export default function Home() {
                 <div className="guideGrid">
                   <div className="guideGroup">
                     <h4>Framing</h4>
-                    <p><b>Auto</b> — recommended. Clip AI chooses for you.</p>
+                    <p><b>Auto</b> — recommended. Clip AI chooses for you and now follows the likely active speaker in multi-person dialogue when confidence is strong.</p>
                     <p><b>Fill</b> — fills the phone screen; best for one-person talking videos.</p>
                     <p><b>Focus</b> — a large central video window with dark space around it; useful for films and wider scenes.</p>
                     <p><b>Backdrop</b> — like Focus, but the spare area uses a blurred version of the video.</p>
@@ -988,7 +992,7 @@ export default function Home() {
                             <details className="exportDetails">
                               <summary>Technical details</summary>
                               <p>
-                                {Math.round(renderedClip.duration)} sec · {renderedClip.auto_profile ? `${renderedClip.auto_profile} · ` : ""}{platformLabel(renderedClip.platform)} · {layoutLabel(renderedClip.layout_mode)} · {frameSizeLabel(renderedClip.frame_size)} · {captionLabel(renderedClip.caption_style)} · {renderedClip.word_timed_captions ? "word-synced" : "legacy timing"} · {captionZoneLabel(renderedClip.caption_zone)} · {framingLabel(renderedClip.framing_mode)}
+                                {Math.round(renderedClip.duration)} sec · {renderedClip.auto_profile ? `${renderedClip.auto_profile} · ` : ""}{platformLabel(renderedClip.platform)} · {layoutLabel(renderedClip.layout_mode)} · {frameSizeLabel(renderedClip.frame_size)} · {captionLabel(renderedClip.caption_style)} · {renderedClip.word_timed_captions ? "word-synced" : "legacy timing"} · {captionZoneLabel(renderedClip.caption_zone)} · {framingLabel(renderedClip.framing_mode)}{renderedClip.active_speaker_switches ? ` · ${renderedClip.active_speaker_switches} speaker switch${renderedClip.active_speaker_switches === 1 ? "" : "es"}` : ""}
                               </p>
                             </details>
                           </section>
@@ -1004,7 +1008,7 @@ export default function Home() {
                 );
               })}
             </div>
-            <div className="footNote">v17 ranks clips across hook, standalone context, payoff, retention and clarity; Auto also makes more scene-aware layout choices.</div>
+            <div className="footNote">v18 adds conservative active-speaker framing for multi-person dialogue while falling back to group framing when confidence is weak.</div>
           </section>
         )}
       </main>

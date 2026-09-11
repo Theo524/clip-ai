@@ -583,7 +583,7 @@ h1 { font-size: clamp(44px, 7vw, 76px); line-height: .98; letter-spacing: -.055e
   .readyDownload { width: 100%; }
 }
 
-/* v17 · smarter editor picks + batch Auto */
+/* v18 · active-speaker framing */
 .bestPicksPanel {
   margin: 0 0 22px;
   border: 1px solid #3d2d5e;

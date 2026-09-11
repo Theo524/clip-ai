@@ -535,19 +535,25 @@ def render_short(request: RenderClipRequest):
 
     start_ms = round(request.start * 1000)
     end_ms = round(request.end * 1000)
-    plan_filename = f"reframe_v17_{start_ms}_{end_ms}.json"
+    plan_filename = f"reframe_v18_{start_ms}_{end_ms}.json"
     plan_path = clips_dir / plan_filename
 
     try:
         if plan_path.exists():
             reframe_plan = load_reframe_plan(plan_path)
         else:
+            speech_intervals = [
+                (segment.start, segment.end)
+                for segment in transcript
+                if segment.end >= request.start and segment.start <= request.end
+            ]
             reframe_plan = plan_smart_reframe(
                 str(source),
                 request.start,
                 request.end,
                 target_width=720,
                 target_height=1280,
+                speech_intervals=speech_intervals,
             )
             save_reframe_plan(reframe_plan, plan_path)
 
@@ -558,8 +564,8 @@ def render_short(request: RenderClipRequest):
         resolved_profile = auto_profile(layout_mode, caption_style, reframe_plan)
 
         offset_tag = f"p{request.caption_offset_ms}" if request.caption_offset_ms >= 0 else f"m{abs(request.caption_offset_ms)}"
-        filename = f"short_v17_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.mp4"
-        subtitle_filename = f"captions_v17_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.ass"
+        filename = f"short_v18_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.mp4"
+        subtitle_filename = f"captions_v18_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.ass"
         output = clips_dir / filename
         subtitles = clips_dir / subtitle_filename
 
@@ -592,7 +598,7 @@ def render_short(request: RenderClipRequest):
                 height=1280,
             )
 
-        cover_filename = f"cover_v17_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{start_ms}_{end_ms}.jpg"
+        cover_filename = f"cover_v18_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{start_ms}_{end_ms}.jpg"
         cover_path = clips_dir / cover_filename
         if not cover_path.exists() or cover_path.stat().st_size == 0:
             # Around one third into the clip usually avoids cold opens while still
@@ -624,6 +630,9 @@ def render_short(request: RenderClipRequest):
         tracking_samples=reframe_plan.sample_count,
         face_samples=reframe_plan.face_samples,
         motion_samples=reframe_plan.motion_samples,
+        active_speaker_samples=reframe_plan.active_speaker_samples,
+        active_speaker_switches=reframe_plan.active_speaker_switches,
+        group_fallback_samples=reframe_plan.group_fallback_samples,
         caption_offset_ms=request.caption_offset_ms,
         word_timed_captions=word_timed,
         caption_zone=caption_zone,

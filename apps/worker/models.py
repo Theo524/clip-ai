@@ -95,6 +95,9 @@ class RenderClipResponse(BaseModel):
     tracking_samples: int | None = None
     face_samples: int | None = None
     motion_samples: int | None = None
+    active_speaker_samples: int | None = None
+    active_speaker_switches: int | None = None
+    group_fallback_samples: int | None = None
     caption_offset_ms: int | None = None
     word_timed_captions: bool | None = None
     caption_zone: str | None = None

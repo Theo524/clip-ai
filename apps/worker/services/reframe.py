@@ -20,6 +20,10 @@ class ReframePlan:
     face_upper_samples: int = 0
     face_middle_samples: int = 0
     face_lower_samples: int = 0
+    active_speaker_samples: int = 0
+    active_speaker_switches: int = 0
+    group_fallback_samples: int = 0
+    speaker_hold_samples: int = 0
 
     def to_dict(self) -> dict:
         payload = asdict(self)
@@ -41,6 +45,10 @@ class ReframePlan:
             face_upper_samples=int(payload.get("face_upper_samples", 0)),
             face_middle_samples=int(payload.get("face_middle_samples", 0)),
             face_lower_samples=int(payload.get("face_lower_samples", 0)),
+            active_speaker_samples=int(payload.get("active_speaker_samples", 0)),
+            active_speaker_switches=int(payload.get("active_speaker_switches", 0)),
+            group_fallback_samples=int(payload.get("group_fallback_samples", 0)),
+            speaker_hold_samples=int(payload.get("speaker_hold_samples", 0)),
         )
 
 
@@ -61,11 +69,14 @@ def plan_smart_reframe(
     *,
     target_width: int = 720,
     target_height: int = 1280,
+    speech_intervals: list[tuple[float, float]] | None = None,
 ) -> ReframePlan:
     """Create a low-cost horizontal framing track.
 
-    Priority is face -> recent face hold -> motion -> center. Sampling is capped so
-    this remains practical on an 8 GB development machine.
+    v18 adds conservative active-speaker tracking for multi-person scenes. It uses
+    transcript speech timing plus relative lower-face motion as a lightweight proxy
+    for who is talking. If confidence is weak, it frames the group instead of making
+    a risky switch. Sampling is capped for an 8 GB development machine.
     """
     try:
         import cv2
@@ -92,8 +103,9 @@ def plan_smart_reframe(
         return ReframePlan("portrait", [(0.0, 0.5)], source_width, source_height)
 
     duration = max(0.01, end - start)
-    # ~0.9 s samples for normal Shorts, while capping very long clips around 80 samples.
-    sample_interval = max(0.9, duration / 80.0)
+    # Speaker inference benefits from slightly denser samples than the older face-only
+    # tracker. Cap around 120 samples so CPU/RAM use remains reasonable locally.
+    sample_interval = max(0.45, duration / 120.0)
     sample_times: list[float] = []
     t = 0.0
     while t < duration:
@@ -117,6 +129,14 @@ def plan_smart_reframe(
     face_upper_samples = 0
     face_middle_samples = 0
     face_lower_samples = 0
+    active_speaker_samples = 0
+    active_speaker_switches = 0
+    group_fallback_samples = 0
+    speaker_hold_samples = 0
+    active_face_center: float | None = None
+    pending_face_center: float | None = None
+    pending_face_count = 0
+    samples_since_active = 999
     successful_samples = 0
 
     for local_t in sample_times:
@@ -168,14 +188,90 @@ def plan_smart_reframe(
                 face_lower_samples += 1
 
             if len(important) >= 2:
-                # Group-aware framing: when two or more similarly important faces are
-                # present, frame their combined horizontal region rather than snapping
-                # to only the largest face. This is much safer for film/dialogue scenes.
+                multi_face_samples += 1
                 left = min(item[0] for item in important)
                 right = max(item[0] + item[2] for item in important)
-                raw_center = ((left + right) / 2.0) / resized.shape[1]
-                multi_face_samples += 1
-                source_kind = "face_group"
+                group_center = ((left + right) / 2.0) / resized.shape[1]
+
+                # Only infer an active speaker while Whisper says speech is happening.
+                # Relative lower-face motion is compared with upper-face motion so a
+                # simple head turn is less likely to be mistaken for speech.
+                source_time = start + local_t
+                speech_now = _speech_active(source_time, speech_intervals)
+                activity = []
+                if speech_now and prev_gray is not None and prev_gray.shape == gray.shape:
+                    for item in important:
+                        x, y, fw, fh, center, _cy, area = item
+                        score = _relative_mouth_activity(gray, prev_gray, x, y, fw, fh)
+                        activity.append((score, center, area))
+
+                chosen_center: float | None = None
+                if activity:
+                    activity.sort(key=lambda item: item[0], reverse=True)
+                    top_score, top_center, _top_area = activity[0]
+                    second_score = activity[1][0] if len(activity) > 1 else 0.0
+                    # Conservative threshold + margin. Uncertain frames stay on the group.
+                    confident = top_score >= 0.010 and top_score >= second_score + 0.0035
+                    if confident:
+                        active_visible_now = (
+                            active_face_center is not None
+                            and any(abs(item[4] - active_face_center) <= 0.18 for item in important)
+                        )
+                        if active_face_center is None:
+                            active_face_center = top_center
+                            pending_face_center = None
+                            pending_face_count = 0
+                            chosen_center = active_face_center
+                        elif not active_visible_now:
+                            # The previous speaker disappeared (shot change / camera cut).
+                            # Move to the clear new candidate immediately instead of
+                            # spending a sample framed on an empty part of the shot.
+                            active_face_center = top_center
+                            active_speaker_switches += 1
+                            pending_face_center = None
+                            pending_face_count = 0
+                            chosen_center = active_face_center
+                        elif abs(top_center - active_face_center) <= 0.17:
+                            active_face_center = active_face_center * 0.68 + top_center * 0.32
+                            pending_face_center = None
+                            pending_face_count = 0
+                            chosen_center = active_face_center
+                        else:
+                            if pending_face_center is not None and abs(top_center - pending_face_center) <= 0.12:
+                                pending_face_count += 1
+                                pending_face_center = pending_face_center * 0.5 + top_center * 0.5
+                            else:
+                                pending_face_center = top_center
+                                pending_face_count = 1
+                            # Two consecutive samples are required before a hard speaker switch.
+                            if pending_face_count >= 2:
+                                active_face_center = pending_face_center
+                                active_speaker_switches += 1
+                                pending_face_center = None
+                                pending_face_count = 0
+                            chosen_center = active_face_center
+
+                if chosen_center is not None:
+                    raw_center = chosen_center
+                    active_speaker_samples += 1
+                    samples_since_active = 0
+                    source_kind = "speaker"
+                else:
+                    samples_since_active += 1
+                    # Briefly hold the prior speaker during uncertain samples, but do not
+                    # chase them forever. This avoids twitchy back-and-forth framing.
+                    visible_active = (
+                        active_face_center is not None
+                        and any(abs(item[4] - active_face_center) <= 0.18 for item in important)
+                    )
+                    if speech_now and visible_active and samples_since_active <= 2:
+                        raw_center = active_face_center
+                        speaker_hold_samples += 1
+                        source_kind = "speaker_hold"
+                    else:
+                        raw_center = group_center
+                        group_fallback_samples += 1
+                        source_kind = "face_group"
             else:
                 candidates = []
                 for _x, _y, _fw, _fh, center, _center_y, area in face_data:
@@ -183,6 +279,8 @@ def plan_smart_reframe(
                     candidates.append((area * proximity, center))
                 _score, raw_center = max(candidates, key=lambda item: item[0])
                 source_kind = "face"
+                active_face_center = raw_center
+                samples_since_active = 0
 
             previous_face_center = raw_center
             samples_since_face = 0
@@ -219,9 +317,9 @@ def plan_smart_reframe(
         # Keep the crop from hugging the extreme edge and smooth hard jumps.
         raw_center = min(0.90, max(0.10, raw_center))
         delta = raw_center - smoothed_center
-        max_step = 0.11 if source_kind.startswith("face") else 0.08
+        max_step = 0.095 if source_kind.startswith("speaker") else (0.11 if source_kind.startswith("face") else 0.08)
         delta = min(max_step, max(-max_step, delta))
-        alpha = 0.62 if source_kind.startswith("face") else 0.42
+        alpha = 0.56 if source_kind.startswith("speaker") else (0.62 if source_kind.startswith("face") else 0.42)
         smoothed_center += delta * alpha
         smoothed_center = min(0.90, max(0.10, smoothed_center))
         keyframes.append((local_t, smoothed_center))
@@ -238,9 +336,12 @@ def plan_smart_reframe(
     if keyframes[-1][0] < duration:
         keyframes.append((duration, keyframes[-1][1]))
 
+    meaningful_speaker = active_speaker_samples >= max(2, math.ceil(successful_samples * 0.06))
     meaningful_face = face_samples >= max(2, math.ceil(successful_samples * 0.12))
     meaningful_motion = motion_samples >= max(2, math.ceil(successful_samples * 0.12))
-    if meaningful_face:
+    if meaningful_speaker:
+        mode = "speaker"
+    elif meaningful_face:
         mode = "face"
     elif meaningful_motion:
         mode = "motion"
@@ -261,12 +362,53 @@ def plan_smart_reframe(
         face_upper_samples=face_upper_samples,
         face_middle_samples=face_middle_samples,
         face_lower_samples=face_lower_samples,
+        active_speaker_samples=active_speaker_samples,
+        active_speaker_switches=active_speaker_switches,
+        group_fallback_samples=group_fallback_samples,
+        speaker_hold_samples=speaker_hold_samples,
     )
 
 
+def _speech_active(at_seconds: float, intervals: list[tuple[float, float]] | None) -> bool:
+    if not intervals:
+        return True
+    return any(start - 0.12 <= at_seconds <= end + 0.12 for start, end in intervals)
+
+
+def _relative_mouth_activity(gray, prev_gray, x: int, y: int, fw: int, fh: int) -> float:
+    """Estimate speech-like lower-face motion while discounting head/eye motion."""
+    h, w = gray.shape[:2]
+    x0 = max(0, min(w - 1, int(x + fw * 0.12)))
+    x1 = max(x0 + 1, min(w, int(x + fw * 0.88)))
+
+    upper_y0 = max(0, min(h - 1, int(y + fh * 0.20)))
+    upper_y1 = max(upper_y0 + 1, min(h, int(y + fh * 0.50)))
+    mouth_y0 = max(0, min(h - 1, int(y + fh * 0.56)))
+    mouth_y1 = max(mouth_y0 + 1, min(h, int(y + fh * 0.93)))
+
+    if x1 <= x0 or upper_y1 <= upper_y0 or mouth_y1 <= mouth_y0:
+        return 0.0
+
+    import cv2
+    upper_diff = cv2.absdiff(gray[upper_y0:upper_y1, x0:x1], prev_gray[upper_y0:upper_y1, x0:x1])
+    mouth_diff = cv2.absdiff(gray[mouth_y0:mouth_y1, x0:x1], prev_gray[mouth_y0:mouth_y1, x0:x1])
+    upper = float(upper_diff.mean()) / 255.0 if upper_diff.size else 0.0
+    mouth = float(mouth_diff.mean()) / 255.0 if mouth_diff.size else 0.0
+    return max(0.0, mouth - upper * 0.72)
+
+
 def build_crop_x_expression(plan: ReframePlan) -> str:
-    """Build a piecewise-linear FFmpeg crop x expression from normalized centers."""
-    points = sorted(plan.keyframes, key=lambda item: item[0])
+    """Build a piecewise-linear FFmpeg crop x expression from normalized centers.
+
+    FFmpeg's expression parser has a practical nesting limit. v18 can sample up to
+    ~120 tracking points, which is enough to overflow that parser on longer clips.
+    Compress the path first while preserving its bends/speaker switches, then build
+    the nested expression from a safe number of points.
+    """
+    points = _compress_keyframes(
+        sorted(plan.keyframes, key=lambda item: item[0]),
+        max_points=72,
+    )
     if not points:
         return "(iw-ow)/2"
     if len(points) == 1:
@@ -284,6 +426,77 @@ def build_crop_x_expression(plan: ReframePlan) -> str:
         x_expr = f"clip({center_expr}*iw-ow/2,0,iw-ow)"
         tail = f"if(lt(t,{t1:.3f}),{x_expr},{tail})"
     return tail
+
+
+def _compress_keyframes(
+    points: list[tuple[float, float]],
+    *,
+    max_points: int = 72,
+) -> list[tuple[float, float]]:
+    """Simplify a tracking curve without feeding FFmpeg an enormous expression.
+
+    We use a time-aware Ramer-Douglas-Peucker simplification on the normalized
+    horizontal center. That preferentially keeps turns and speaker-switch movement
+    rather than blindly dropping every Nth sample. A final even cap is only a safety
+    net for extremely jagged tracks.
+    """
+    if not points:
+        return []
+
+    # Drop duplicate/near-duplicate timestamps; they create zero-length spans and
+    # add expression depth without adding useful tracking information.
+    deduped: list[tuple[float, float]] = []
+    for t, center in points:
+        t = float(t)
+        center = float(center)
+        if deduped and abs(t - deduped[-1][0]) < 0.0005:
+            deduped[-1] = (t, center)
+        else:
+            deduped.append((t, center))
+
+    if len(deduped) <= max_points:
+        return deduped
+
+    def simplify(tolerance: float) -> list[tuple[float, float]]:
+        def recurse(chunk: list[tuple[float, float]]) -> list[tuple[float, float]]:
+            if len(chunk) <= 2:
+                return chunk
+            t0, c0 = chunk[0]
+            t1, c1 = chunk[-1]
+            span = max(1e-9, t1 - t0)
+            best_index = -1
+            best_error = -1.0
+            for idx in range(1, len(chunk) - 1):
+                t, center = chunk[idx]
+                ratio = min(1.0, max(0.0, (t - t0) / span))
+                expected = c0 + (c1 - c0) * ratio
+                error = abs(center - expected)
+                if error > best_error:
+                    best_error = error
+                    best_index = idx
+            if best_error <= tolerance or best_index < 0:
+                return [chunk[0], chunk[-1]]
+            left = recurse(chunk[: best_index + 1])
+            right = recurse(chunk[best_index:])
+            return left[:-1] + right
+
+        return recurse(deduped)
+
+    # ~0.004 is less than 3 pixels on a 720px output. Increase only as much as
+    # necessary to stay below FFmpeg's safe nesting depth.
+    tolerance = 0.004
+    simplified = simplify(tolerance)
+    while len(simplified) > max_points and tolerance < 0.08:
+        tolerance *= 1.45
+        simplified = simplify(tolerance)
+
+    if len(simplified) <= max_points:
+        return simplified
+
+    # Pathological/noisy track: keep endpoints plus evenly spread samples.
+    last = len(simplified) - 1
+    indices = sorted({round(i * last / (max_points - 1)) for i in range(max_points)})
+    return [simplified[i] for i in indices]
 
 
 def _center_to_x(center: float) -> str:

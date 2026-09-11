@@ -1,4 +1,4 @@
-# Clip AI v17 architecture
+# Clip AI v18.1 architecture
 
 ```text
 Upload / authorised YouTube project
@@ -10,53 +10,62 @@ faster-whisper
             ↓
 local/OpenAI moment ranking
             ↓
-editor score model
-  Hook
-  Standalone context
-  Payoff
-  Retention
-  Clarity
-            ↓
 Best 3 + editor explanations
             ↓
 smart title + social caption
             ↓
-subject / scene sampling
+visual sampling
   faces + groups
-  motion
-  scene-cut evidence
+  motion + scene cuts
+            ↓
+lightweight speaker inference
+  transcript says speech is active
+  + lower-face motion > upper-face motion
+  + confidence margin over other faces
+            ↓
+conservative speaker state
+  clear same speaker → follow smoothly
+  uncertain → group center
+  possible switch → require 2 samples
+  camera cut removes old speaker → switch safely
             ↓
 Auto layout profile
   stable single face → Fill + Viral
-  group / cut-heavy scene → Focus + Cinematic
+  group/dialogue → Focus + Cinematic
   motion/gameplay → Backdrop + Meme
   portrait → Preserve + Clean
             ↓
 caption phrase engine
   punctuation + pause boundaries
-  style-specific grouping
   word-level highlighting
   platform safe-zones
-            ↓
-sequential batch render (optional)
             ↓
 FFmpeg 9:16 render + cover frame
             ↓
 projects/history + ready-to-post panel
 ```
 
-## Ranking model
+## Why this is not full speaker diarization
 
-The local ranker still works without API credits. v17 keeps the proven boundary/hook/payoff heuristic but also produces five explicit editorial subscores. The final score blends the original heuristic with those dimensions, reducing the chance that one keyword alone dominates ranking.
+The local development machine has 8 GB RAM, so v18 avoids adding a large audiovisual speaker model. Instead it combines information already available in the pipeline: Whisper tells us when speech is occurring, Haar face detection gives candidate faces, and sampled lower-face motion supplies a cheap visual clue.
 
-The top three are presentation/UI choices, not separate copies of the clips. They point to the same candidate records shown in the full details grid below.
+This is intentionally conservative. A false positive that aggressively crops to the wrong actor is worse than keeping both actors visible, so weak evidence falls back to the group center.
 
-## Auto layout
+## Reframe plan
 
-The lightweight OpenCV sampling pass now records sampled scene-cut evidence as well as faces, multi-person frames and motion. This helps distinguish a stable talking-head shot from a wider edited/cinematic scene.
+`ReframePlan` now stores:
 
-Auto frame size can choose Compact for group/cut-heavy Focus clips to preserve more horizontal context. Manual Compact/Balanced/Immersive settings always override Auto.
+- `active_speaker_samples`
+- `active_speaker_switches`
+- `group_fallback_samples`
+- `speaker_hold_samples`
 
-## Batch rendering
+These travel with the cached reframe plan and are exposed in render metadata. Reframe cache filenames are versioned as `reframe_v18_*`, so old v17 plans are not silently reused.
 
-`Render all 3` deliberately renders sequentially in the browser by calling the existing `/render-short` endpoint for each top clip. This avoids multiplying RAM/CPU pressure on an 8 GB development machine and keeps the single-render pipeline as the source of truth.
+## FFmpeg tracking-expression safety
+
+Before rendering, dense reframe tracks are simplified with a time-aware curve reduction and capped to a safe number of keyframes. This avoids the FFmpeg nested-expression parser failure seen in v18 on ~45s+ active-speaker clips while retaining endpoints and important direction changes.
+
+## Render safety
+
+Speaker movement is still converted into a smoothed crop-center track rather than hard jump cuts. Multi-person Auto layouts continue to preserve more scene context, and the caption safe-zone system remains independent of the speaker tracker.

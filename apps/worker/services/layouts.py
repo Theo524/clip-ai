@@ -59,7 +59,7 @@ def choose_caption_style(requested: str, layout: str, plan: ReframePlan) -> str:
 
     face_ratio, multi_face_ratio, cut_ratio = _ratios(plan)
 
-    if layout == "fill" and plan.mode == "face":
+    if layout == "fill" and plan.mode in {"face", "speaker"}:
         return "viral"
     if layout == "backdrop" and plan.mode == "motion":
         return "meme"
@@ -92,6 +92,10 @@ def choose_frame_size(requested: str | None, layout: str, plan: ReframePlan) -> 
 def auto_profile(layout: str, caption_style: str, plan: ReframePlan) -> str:
     if layout == "preserve":
         return "Already vertical"
+    if plan.mode == "speaker" and plan.active_speaker_samples > 0:
+        if plan.active_speaker_switches > 0:
+            return "Active-speaker dialogue"
+        return "Speaker-aware dialogue"
     if layout == "fill" and plan.mode == "face":
         return "Talking head"
     if layout == "focus" and (plan.multi_face_samples > 0 or getattr(plan, "scene_cut_samples", 0) > 0):
