@@ -204,23 +204,23 @@ export default function Home() {
     <div className="shell">
       <nav className="nav">
         <div className="brand">Clip AI</div>
-        <div className="badge">Milestone 10 · better moment detection</div>
+        <div className="badge">Milestone 11 · simpler controls</div>
       </nav>
 
       <main className="main">
         <section className="hero">
           <div className="eyebrow">Long video → short-form gold</div>
-          <h1>Stable captions that pop on the word — without blinking.</h1>
+          <h1>Turn a long video into a Short without learning video editing.</h1>
           <p className="sub">
-            Viral and Meme phrases now stay fixed on screen while only the spoken word highlights and pops. Caption placement also reuses face sampling to choose a safer in-picture upper, middle, or lower zone.
+            Upload a video, pick a moment, and press Create Short. Auto handles framing and captions; the detailed controls are there only when you want them.
           </p>
 
           <div className="modeTabs">
             <button className={mode === "upload" ? "tab active" : "tab"} onClick={() => switchMode("upload")}>
-              Upload video · real
+              Your video
             </button>
             <button className={mode === "youtube" ? "tab active" : "tab"} onClick={() => switchMode("youtube")}>
-              YouTube URL · demo
+              YouTube link
             </button>
           </div>
 
@@ -252,7 +252,7 @@ export default function Home() {
                 required
               />
               <button className="primary" disabled={loading || !url}>
-                {loading ? "Finding moments…" : "Generate demo clips"}
+                {loading ? "Finding moments…" : "Try link demo"}
               </button>
             </form>
           )}
@@ -268,6 +268,47 @@ export default function Home() {
               </div>
               <div className="badge">{result.mock ? "Demo analysis" : "Real local transcript"}</div>
             </div>
+
+            <details className="formatGuide">
+              <summary>
+                <span>
+                  <strong>New to video settings?</strong>
+                  <small>Open the 60-second guide to framing, sizes and captions.</small>
+                </span>
+                <span className="guideChevron">⌄</span>
+              </summary>
+              <div className="guideBody">
+                <div className="guideIntro">
+                  <strong>The final Short is always 9:16</strong>
+                  <p>That is the normal vertical phone format (720×1280 in this local build). The choices below change how your original video sits inside that vertical canvas.</p>
+                </div>
+                <div className="guideGrid">
+                  <div className="guideGroup">
+                    <h4>Framing</h4>
+                    <p><b>Auto</b> — recommended. Clip AI chooses for you.</p>
+                    <p><b>Fill</b> — fills the phone screen; best for one-person talking videos.</p>
+                    <p><b>Focus</b> — a large central video window with dark space around it; useful for films and wider scenes.</p>
+                    <p><b>Backdrop</b> — like Focus, but the spare area uses a blurred version of the video.</p>
+                    <p><b>Preserve</b> — keeps footage that is already vertical mostly unchanged.</p>
+                  </div>
+                  <div className="guideGroup">
+                    <h4>Video size</h4>
+                    <p>This mainly affects Focus and Backdrop.</p>
+                    <p><b>Compact</b> — more breathing room around the picture.</p>
+                    <p><b>Balanced</b> — recommended; roughly a 4:5-style picture inside the 9:16 Short.</p>
+                    <p><b>Immersive</b> — makes the picture larger and uses more of the screen.</p>
+                  </div>
+                  <div className="guideGroup">
+                    <h4>Caption style</h4>
+                    <p><b>Viral Pop</b> — energetic word highlighting for podcasts and social clips.</p>
+                    <p><b>Cinematic</b> — quieter subtitles on the lower part of the actual picture.</p>
+                    <p><b>Clean</b> — simple and readable with little distraction.</p>
+                    <p><b>Meme</b> — bold, playful text for reactions, gameplay and humorous clips.</p>
+                  </div>
+                </div>
+                <div className="guideTip"><b>Not sure?</b> Leave everything on Auto and press Create Short. You can always regenerate with different settings.</div>
+              </div>
+            </details>
 
             <div className="clipGrid">
               {result.clips.map((clip, index) => {
@@ -290,89 +331,105 @@ export default function Home() {
                       <span className="time">{fmt(clip.start)} → {fmt(clip.end)}</span>
                     </div>
                     <h3>{clip.title}</h3>
-                    <p className="hook">“{clip.hook}”</p>
-                    <div className="reasons">
-                      {clip.reasons.map((reason) => <span className="reason" key={reason}>{reason}</span>)}
+                    <div className="clipPreview">
+                      <span>Starts with</span>
+                      <p>“{clip.hook}”</p>
                     </div>
+                    <details className="whyPicked">
+                      <summary>Why Clip AI picked this moment</summary>
+                      <div className="reasons">
+                        {clip.reasons.map((reason) => <span className="reason" key={reason}>{reason}</span>)}
+                      </div>
+                    </details>
 
                     {!result.mock && result.job_id && (
                       <>
-                        <div className="renderOptions">
-                          <label>
-                            <span>Framing</span>
-                            <select
-                              value={selectedLayout}
-                              onChange={(e) => setLayouts((current) => ({ ...current, [index]: e.target.value as LayoutMode }))}
-                              disabled={rendering !== null}
-                            >
-                              <option value="auto">Auto</option>
-                              <option value="fill">Fill · full 9:16 crop</option>
-                              <option value="focus">Focus · central video window</option>
-                              <option value="backdrop">Backdrop · focus + blur</option>
-                              <option value="preserve">Preserve · vertical source</option>
-                            </select>
-                          </label>
-                          <label>
-                            <span>Video size</span>
-                            <select
-                              value={selectedFrameSize}
-                              onChange={(e) => setFrameSizes((current) => ({ ...current, [index]: e.target.value as FrameSize }))}
-                              disabled={rendering !== null}
-                            >
-                              <option value="compact">Compact</option>
-                              <option value="balanced">Balanced · recommended</option>
-                              <option value="immersive">Immersive</option>
-                            </select>
-                          </label>
-                          <label>
-                            <span>Captions</span>
-                            <select
-                              value={selectedCaption}
-                              onChange={(e) => setCaptions((current) => ({ ...current, [index]: e.target.value as CaptionStyle }))}
-                              disabled={rendering !== null}
-                            >
-                              <option value="auto">Auto</option>
-                              <option value="viral">Viral Pop</option>
-                              <option value="cinematic">Cinematic</option>
-                              <option value="clean">Clean</option>
-                              <option value="meme">Meme</option>
-                            </select>
-                          </label>
-                        </div>
-                        <div className="syncControl">
-                          <div className="syncHead">
-                            <span>Caption sync</span>
-                            <strong>{selectedOffset > 0 ? `+${selectedOffset}` : selectedOffset} ms</strong>
-                          </div>
-                          <input
-                            type="range"
-                            min="-500"
-                            max="500"
-                            step="50"
-                            value={selectedOffset}
-                            disabled={rendering !== null}
-                            onChange={(e) => setCaptionOffsets((current) => ({ ...current, [index]: Number(e.target.value) }))}
-                          />
-                          <div className="syncLegend"><span>Earlier</span><span>Exact Whisper timing</span><span>Later</span></div>
-                        </div>
-                        <p className="optionHint">Word-level timing stays exact. Viral/Meme phrases remain stable while the active word pops, and Auto placement tries to keep captions away from the dominant face region.</p>
-
-                        <div className="renderActions">
+                        <div className="renderActions simpleActions">
                           <button
                             className="renderButton shortButton"
                             onClick={() => renderMedia(clip, index, "short")}
                             disabled={rendering !== null}
                           >
-                            {isShortRendering ? "Building adaptive Short…" : "Generate Adaptive Short"}
+                            {isShortRendering ? "Creating Short…" : "Create Short"}
                           </button>
                           <button
                             className="renderButton secondaryButton"
                             onClick={() => renderMedia(clip, index, "original")}
                             disabled={rendering !== null}
                           >
-                            {isOriginalRendering ? "Cutting original…" : "Original MP4"}
+                            {isOriginalRendering ? "Cutting original…" : "Original clip"}
                           </button>
                         </div>
+
+                        <details className="customizePanel">
+                          <summary>
+                            <span>Customize</span>
+                            <small>Optional · Auto is recommended</small>
+                          </summary>
+                          <div className="customizeBody">
+                            <div className="renderOptions">
+                              <label>
+                                <span>Framing <i>How the picture fits</i></span>
+                                <select
+                                  value={selectedLayout}
+                                  onChange={(e) => setLayouts((current) => ({ ...current, [index]: e.target.value as LayoutMode }))}
+                                  disabled={rendering !== null}
+                                >
+                                  <option value="auto">Auto · recommended</option>
+                                  <option value="fill">Fill · full vertical crop</option>
+                                  <option value="focus">Focus · central window</option>
+                                  <option value="backdrop">Backdrop · central + blur</option>
+                                  <option value="preserve">Preserve · already vertical</option>
+                                </select>
+                              </label>
+                              <label>
+                                <span>Video size <i>Focus/Backdrop only</i></span>
+                                <select
+                                  value={selectedFrameSize}
+                                  onChange={(e) => setFrameSizes((current) => ({ ...current, [index]: e.target.value as FrameSize }))}
+                                  disabled={rendering !== null}
+                                >
+                                  <option value="compact">Compact</option>
+                                  <option value="balanced">Balanced · recommended</option>
+                                  <option value="immersive">Immersive</option>
+                                </select>
+                              </label>
+                              <label>
+                                <span>Captions <i>Text personality</i></span>
+                                <select
+                                  value={selectedCaption}
+                                  onChange={(e) => setCaptions((current) => ({ ...current, [index]: e.target.value as CaptionStyle }))}
+                                  disabled={rendering !== null}
+                                >
+                                  <option value="auto">Auto · recommended</option>
+                                  <option value="viral">Viral Pop</option>
+                                  <option value="cinematic">Cinematic</option>
+                                  <option value="clean">Clean</option>
+                                  <option value="meme">Meme</option>
+                                </select>
+                              </label>
+                            </div>
+                            <details className="advancedPanel">
+                              <summary>Advanced timing</summary>
+                              <div className="syncControl">
+                                <div className="syncHead">
+                                  <span>Caption sync</span>
+                                  <strong>{selectedOffset > 0 ? `+${selectedOffset}` : selectedOffset} ms</strong>
+                                </div>
+                                <input
+                                  type="range"
+                                  min="-500"
+                                  max="500"
+                                  step="50"
+                                  value={selectedOffset}
+                                  disabled={rendering !== null}
+                                  onChange={(e) => setCaptionOffsets((current) => ({ ...current, [index]: Number(e.target.value) }))}
+                                />
+                                <div className="syncLegend"><span>Earlier</span><span>Whisper timing</span><span>Later</span></div>
+                              </div>
+                            </details>
+                          </div>
+                        </details>
                       </>
                     )}
 
@@ -398,7 +455,7 @@ export default function Home() {
                 );
               })}
             </div>
-            <div className="footNote">Milestone 10 improves local moment selection: cleaner openings, tighter endings, payoff-aware trimming, and stronger duplicate suppression. Re-analyse a video to use the new selector; rendering and caption behaviour remain unchanged.</div>
+            <div className="footNote">Milestone 11 keeps Auto simple, moves expert controls out of the way, explains every format in plain English, and removes the doubled-text effect from Viral/Meme word pops.</div>
           </section>
         )}
       </main>

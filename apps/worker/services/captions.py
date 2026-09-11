@@ -163,11 +163,9 @@ def _cue_override(
     pos = fr"\an2\pos({x},{y})"
     # Phrase-level entry/exit only. Word changes never restart these transitions.
     if not phrase_transition:
-        if style in {"viral", "meme"}:
-            # Move only the active-word overlay a few pixels upward. The stable
-            # base phrase never moves, so this reads as a word pop without layout
-            # jitter or a full-caption re-entry.
-            return "{" + fr"\an2\move({x},{y + 6},{x},{y},0,95)" + "}"
+        # Word-to-word changes stay at exactly the same anchor. The pop now comes
+        # from a small scale transform on the active word itself, not from moving
+        # a second text layer around the screen.
         return "{" + pos + "}"
     if style == "viral":
         return "{" + pos + r"\fad(45,70)}"
@@ -255,35 +253,31 @@ def _make_phrases(words: list[WordCue], max_words: int, max_chars: int) -> list[
     return phrases
 
 
-def _base_phrase_text(phrase: PhraseCue, style: str) -> str:
-    return " ".join(
-        _escape_ass(word.text.upper() if style == "meme" else word.text)
-        for word in phrase.words
-    )
+def _styled_phrase_text(phrase: PhraseCue, active_index: int, style: str) -> str:
+    """Render one complete phrase with a single active word.
 
-
-def _active_word_overlay_text(phrase: PhraseCue, active_index: int, style: str) -> str:
-    """Render only the active word while preserving the phrase's text layout.
-
-    Non-active words are fully transparent but remain in the line, so the accent
-    word lands over the stable base phrase instead of redrawing/fading the whole
-    caption block every time Whisper advances to the next word.
+    Earlier builds used a persistent base phrase plus a second moving active-word
+    layer. That made the base word peek out when the highlighted word scaled or
+    moved. Milestone 11 uses exactly one visible text layer at a time instead.
+    The phrase is redrawn at identical coordinates with no per-word fade, so the
+    only intentional visual change is the active word's colour/pop treatment.
     """
     cfg = STYLE_CONFIG[style]
     output: list[str] = []
     for index, word in enumerate(phrase.words):
         text = _escape_ass(word.text.upper() if style == "meme" else word.text)
         if index == active_index:
-            # Colour/outline emphasis does not change word width, so the active
-            # overlay stays perfectly aligned with the persistent base phrase.
+            # Keep the pop modest so neighbouring words barely reflow. The two
+            # short transforms create a quick grow-and-settle effect without a
+            # second copy of the word underneath it.
             text = (
-                r"{\alpha&H00&\c" + str(cfg["active"])
-                + r"\bord6\shad2}"
+                r"{\c" + str(cfg["active"])
+                + r"\bord6\shad2\fscx100\fscy100"
+                + r"\t(0,75,\fscx108\fscy108)\t(75,150,\fscx103\fscy103)}"
                 + text
-                + r"{\alpha&HFF&\c" + str(cfg["primary"]) + r"\bord5\shad2}"
+                + r"{\c" + str(cfg["primary"])
+                + r"\bord5\shad2\fscx100\fscy100}"
             )
-        else:
-            text = r"{\alpha&HFF&}" + text
         output.append(text)
     return " ".join(output)
 
@@ -366,27 +360,25 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
     phrase_override = _cue_override(
         style, layout_mode, frame_size, width, height, caption_zone, phrase_transition=True
     )
-    active_override = _cue_override(
+    stable_override = _cue_override(
         style, layout_mode, frame_size, width, height, caption_zone, phrase_transition=False
     )
 
     if word_timed:
         for phrase in phrases:
             if style in {"viral", "meme"}:
-                # Layer 0: one stable phrase event for the whole phrase lifetime.
-                # Layer 1: a transparent-layout overlay that reveals/pops only the
-                # currently spoken word. Word changes therefore never fade/re-enter
-                # the full caption block.
-                base_display = _base_phrase_text(phrase, style)
-                lines.append(
-                    f"Dialogue: 0,{_ass_time(phrase.start)},{_ass_time(max(phrase.end, phrase.start + 0.05))},Default,,0,0,0,,{phrase_override}{base_display}"
-                )
+                # Exactly one visible phrase event at any instant. Keep each event
+                # alive until the next word starts, so small Whisper gaps never
+                # make the phrase blink. No base/overlay duplication is used.
                 for index, word in enumerate(phrase.words):
                     cue_start = word.start
-                    cue_end = max(word.end, cue_start + 0.05)
-                    display = _active_word_overlay_text(phrase, index, style)
+                    if index + 1 < len(phrase.words):
+                        cue_end = max(phrase.words[index + 1].start, cue_start + 0.05)
+                    else:
+                        cue_end = max(phrase.end, cue_start + 0.05)
+                    display = _styled_phrase_text(phrase, index, style)
                     lines.append(
-                        f"Dialogue: 1,{_ass_time(cue_start)},{_ass_time(cue_end)},Default,,0,0,0,,{active_override}{display}"
+                        f"Dialogue: 0,{_ass_time(cue_start)},{_ass_time(cue_end)},Default,,0,0,0,,{stable_override}{display}"
                     )
             else:
                 display = _escape_ass(phrase.text)

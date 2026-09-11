@@ -4,7 +4,7 @@ from models import TranscriptSegment, TranscriptWord
 from services.captions import write_clip_ass
 
 
-def test_word_timed_viral_captions_keep_phrase_stable_and_pop_each_word(tmp_path: Path):
+def test_word_timed_viral_captions_use_one_layer_without_ghost_text(tmp_path: Path):
     segments = [
         TranscriptSegment(
             start=10.0,
@@ -31,16 +31,13 @@ def test_word_timed_viral_captions_keep_phrase_stable_and_pop_each_word(tmp_path
     text = Path(path).read_text(encoding="utf-8-sig")
     assert word_timed is True
     dialogue_lines = [line for line in text.splitlines() if line.startswith("Dialogue:")]
-    base_lines = [line for line in dialogue_lines if line.startswith("Dialogue: 0,")]
-    overlay_lines = [line for line in dialogue_lines if line.startswith("Dialogue: 1,")]
-    assert len(base_lines) == 1
-    assert len(overlay_lines) == 3
-    assert "This really works" in base_lines[0]
-    assert "\\fad(45,70)" in base_lines[0]
-    assert all("\\fad(" not in line for line in overlay_lines)
-    assert any("\\move(" in line for line in overlay_lines)
-    assert any("\\alpha&HFF&" in line for line in overlay_lines)
-
+    assert len(dialogue_lines) == 3
+    assert all(line.startswith("Dialogue: 0,") for line in dialogue_lines)
+    assert all("\\fad(" not in line for line in dialogue_lines)
+    assert all("\\move(" not in line for line in dialogue_lines)
+    assert all("\\alpha&HFF&" not in line for line in dialogue_lines)
+    assert all("This" in line and "really" in line and "works" in line for line in dialogue_lines)
+    assert any("\\fscx108" in line for line in dialogue_lines)
 
 def test_caption_offset_moves_word_timing(tmp_path: Path):
     segments = [

@@ -1,71 +1,24 @@
-# Clip AI — Milestone 10
+# Clip AI — Milestone 11
 
-Local-first prototype for turning long videos into short-form clips.
+Milestone 11 focuses on clarity and caption polish rather than adding more controls.
 
-## What changed in Milestone 10
+## What changed
 
-This milestone improves **which moments get selected**, rather than adding another visual effect.
+- The two source tabs remain: **Your video** and **YouTube link**.
+- Post-analysis rendering is now beginner-first: press **Create Short** and Auto handles the normal choices.
+- Framing, video size, caption style, and timing are hidden in an optional **Customize** panel.
+- Added a plain-English **60-second guide** explaining 9:16 output, Fill, Focus, Backdrop, Preserve, Compact/Balanced/Immersive, and all caption styles.
+- Clip cards are easier to scan: the transcript/hook preview is compact and selection reasons are collapsed.
+- Viral Pop and Meme captions no longer use a base text layer plus a moving highlight layer. The active word is styled in a single visible phrase layer, fixing the doubled/ghost text that could show beneath a larger word.
+- Existing word-level timing, smart caption-safe placement, adaptive framing, and Milestone 10 moment selection remain intact.
 
-The local zero-credit selector now prioritises:
+## YouTube tab
 
-- **Clean openings** — strongly penalises clips that begin as context-dependent fragments such as “and…”, “but…”, or “because…” unless the line is clearly an intentional hook.
-- **Hooks** — rewards question-led openings, strong hook language, specific numbers and direct claims.
-- **Complete ideas** — looks for a turn/pivot and a payoff or takeaway, not merely exciting vocabulary.
-- **Tighter endings** — rewards clips that end on the conclusion and penalises extra chatter after the payoff.
-- **Natural boundaries** — pauses and complete sentence endings help the candidate score.
-- **Better Shorts length** — roughly 24–48 seconds is preferred when the idea is complete; 18–60 seconds remains valid.
-- **Standalone context** — clips should make sense to someone who has not watched the surrounding video.
-- **Duplicate suppression** — heavily overlapping and near-identical moments are filtered more aggressively.
-- **Tiny edit padding** — selected timestamps include a small pre/post-roll so generated MP4s are less likely to cut the first or last phoneme.
+The YouTube tab stays in the product because it is part of the intended workflow. The current starter still treats it as a demo path; production link ingestion should use an authorised/owned-content import flow rather than depending on brittle arbitrary-video downloading.
 
-The OpenAI ranking prompt has also been updated with the same editing rules for when `RANKING_BACKEND=openai` is enabled later.
+## Local development
 
-## What did not change
-
-Milestone 9's visual system remains intact:
-
-- Fill / Focus / Backdrop / Preserve framing
-- Compact / Balanced / Immersive video-window sizing
-- word-level Whisper caption timing
-- stable Viral Pop / Meme active-word highlights
-- Cinematic / Clean caption presets
-- caption-safe in-picture placement
-- smart face/group/motion reframing
-
-## Important after upgrading
-
-**Re-analyse the video** to use the Milestone 10 selector. Existing analysed jobs already have their old clip suggestions saved, so simply re-rendering an old suggestion will not change its start/end timestamps.
-
-A good comparison test is to analyse the same 5–10 minute talking video in Milestone 9 and Milestone 10 and look for:
-
-```text
-Milestone 9 candidate:
-“And before that... [context] ... actual interesting point ... and then...”
-
-Milestone 10 candidate:
-“The biggest mistake I made was...”
-        ↓
-complete idea / turn
-        ↓
-“That’s why I now...”
-        ↓
-CUT
-```
-
-## Recommended development setup
-
-Your current local configuration can remain:
-
-```env
-MOCK_MODE=false
-TRANSCRIPTION_BACKEND=local
-RANKING_BACKEND=local
-LOCAL_WHISPER_MODEL=tiny.en
-LOCAL_WHISPER_DEVICE=cpu
-LOCAL_WHISPER_COMPUTE_TYPE=int8
-```
-
-## Run the worker
+Backend:
 
 ```bat
 cd apps\worker
@@ -74,7 +27,7 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-## Run the web app
+Frontend:
 
 ```bat
 cd apps\web
@@ -82,5 +35,3 @@ npm run dev
 ```
 
 Open `http://localhost:3000`.
-
-Your real `.env`, generated media, virtual environment, Next.js build output and `node_modules` remain gitignored.

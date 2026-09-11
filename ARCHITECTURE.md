@@ -1,114 +1,37 @@
-# Clip AI Architecture — Milestone 10
+# Clip AI architecture — Milestone 11
 
-## Pipeline
+The processing pipeline remains:
 
-```text
-video upload
-  ↓
-FFmpeg audio extraction/chunking
-  ↓
-faster-whisper
-  ├─ segment timestamps
-  └─ word timestamps
-  ↓
-transcript.json
-  ↓
-M10 moment selector
-  ├─ candidate window generation
-  ├─ opening / hook scoring
-  ├─ completeness + payoff scoring
-  ├─ clean-boundary scoring
-  ├─ filler / repetition penalties
-  ├─ payoff-tail trimming preference
-  └─ overlap / semantic-near-duplicate suppression
-  ↓
-ranked clip candidates
-  ↓
-selected clip
-  ├─ lightweight visual sampling
-  │    ├─ horizontal subject/group reframe plan
-  │    └─ coarse vertical face occupancy
-  └─ word timings
-       ↓
-caption phrase builder
-  ├─ stable phrase event
-  └─ active-word overlay events
-       ↓
-caption-safe zone selection
-       ↓
-ASS caption track
-       ↓
-FFmpeg adaptive 720×1280 render
-```
+1. upload/import source
+2. FFmpeg audio extraction
+3. local Whisper transcription with word timestamps
+4. local/OpenAI moment ranking
+5. visual sampling for reframe and caption-safe zones
+6. FFmpeg render + ASS captions
 
-## Candidate generation
+## UX principle
 
-The local selector evaluates transcript windows of roughly **18–65 seconds**. It does not simply split the transcript into fixed intervals.
+The default product path is now intentionally one decision:
 
-Candidate starts and ends are based on Whisper transcript segments, with preference for:
+`pick clip → Create Short`
 
-- complete sentence endings
-- speech pauses between segments
-- clean standalone openings
-- 24–48 second finished ideas
+Auto determines the normal framing and caption style. Manual controls live behind **Customize** and advanced caption offset lives one level deeper.
 
-A tiny pre/post-roll is added to the chosen timestamp so the final MP4 does not clip a phoneme at an exact speech boundary.
+## Caption renderer change
 
-## Selection score
+Viral/Meme previously used two simultaneously visible layers:
 
-The local score combines several signals:
+- persistent base phrase
+- active-word overlay
 
-### Opening quality
+When the active word moved/scaled, the unchanged word underneath could become visible and look doubled. Milestone 11 renders one complete phrase per active-word interval. The event has no word-to-word fade or movement; only the active word receives colour and a small scale transform. This removes the ghost layer while preserving word-level sync.
 
-Strong positive signals:
+## Format guide
 
-- direct hook language
-- a question-led opener
-- concrete numbers/details
-- a clean standalone first thought
+The web UI explains:
 
-Negative signals:
-
-- context-dependent starts such as “and…”, “but…”, “because…”, “then…”
-- pronoun-heavy starts that obviously rely on unseen context
-
-### Narrative / idea completeness
-
-The selector rewards:
-
-- contrast/pivot language
-- a takeaway, reveal, lesson or conclusion
-- endings that actually land on that payoff
-
-If a payoff has already landed and the candidate continues into unrelated or low-value chatter, the longer version receives a substantial penalty so the tighter edit wins.
-
-### Speech quality
-
-Additional signals include:
-
-- useful speaking density
-- enough substance for a standalone Short
-- low filler density
-- lower repetition
-- specific/high-interest language
-
-## Deduplication
-
-Candidates are sorted by quality and tighter duration. A candidate is rejected if it heavily overlaps a stronger selected moment or if its opening is nearly identical to an already selected candidate.
-
-This reduces the common failure mode where the top five “clips” are just slightly shifted versions of one good 40-second section.
-
-## OpenAI ranking path
-
-`services/rank.py` remains the optional hosted selector. Its prompt now mirrors Milestone 10's editorial rules: choose the tightest complete version, avoid mid-thought boundaries, stop after the payoff, and value standalone context as highly as excitement.
-
-## Rendering system
-
-Milestone 9 rendering remains unchanged:
-
-- **Fill** — full 9:16 smart crop.
-- **Focus** — large central portrait-friendly crop on a quiet dark canvas.
-- **Backdrop** — Focus crop with a blurred canvas.
-- **Preserve** — already-vertical source.
-
-Captions remain inside the actual picture area, with word-level timing and stable active-word emphasis for Viral/Meme presets.
+- final local output: 720×1280 (9:16)
+- Fill / Focus / Backdrop / Preserve
+- Focus/Backdrop window sizes: Compact / Balanced / Immersive
+- Viral Pop / Cinematic / Clean / Meme
+- Auto as the recommended beginner option
