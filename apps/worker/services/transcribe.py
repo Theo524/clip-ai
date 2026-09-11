@@ -34,7 +34,7 @@ def transcribe_local_with_timestamps(
     model = _load_local_model(model_name, device, compute_type)
     raw_segments, _info = model.transcribe(
         audio_path,
-        beam_size=1,
+        beam_size=5,
         vad_filter=True,
         condition_on_previous_text=True,
     )

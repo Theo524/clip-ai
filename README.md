@@ -1,79 +1,63 @@
-# Clip AI — Milestone 2.1 (local development mode)
+# Clip AI — Milestone 3
 
-This build removes the API-credit blocker for development.
+A local-first prototype for turning long-form video into ranked short-form candidates and rendering chosen moments into real MP4 clips.
 
-## What works
+## What works now
 
-- Upload MP4/MOV/MKV/WEBM/M4V/AVI video files you own or are authorised to use
-- FFmpeg extracts audio
-- **faster-whisper runs locally on your PC** and produces timestamped transcript segments
-- A **local heuristic ranker** returns real clip candidates without API credits
-- YouTube URL demo mode remains available
-- OpenAI transcription/ranking code remains available as an optional production upgrade
+- Upload an authorised local video.
+- FFmpeg extracts audio.
+- Local `faster-whisper` produces timestamped transcript segments.
+- A zero-cost local development ranker proposes candidate moments.
+- Each real candidate has a **Generate MP4** button.
+- FFmpeg makes a frame-accurate H.264/AAC MP4 from the original source.
+- The generated clip plays in the browser and can be downloaded.
+- YouTube URL mode remains a demo; direct arbitrary YouTube downloading is intentionally not wired in.
 
-## Important first-run behaviour
-
-The first real upload downloads the configured Whisper model (`small.en`) to your computer. This can take a little while and uses several hundred MB of disk space. Later runs reuse the cached model.
-
-The default is CPU + int8, so you do not need CUDA or an NVIDIA GPU.
-
-## Update an existing Milestone 2 checkout
-
-Copy these files over your existing project and replace matching files. Then, in the worker virtual environment:
+## Run the worker
 
 ```bat
 cd apps\worker
 .venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-Open `.env` and use:
-
-```env
-MOCK_MODE=false
-TRANSCRIPTION_BACKEND=local
-RANKING_BACKEND=local
-LOCAL_WHISPER_MODEL=small.en
-LOCAL_WHISPER_DEVICE=cpu
-LOCAL_WHISPER_COMPUTE_TYPE=int8
-```
-
-Your existing `OPENAI_API_KEY=...` can stay in `.env`; it will not be used while both backends are set to `local`.
-
-Start the worker:
-
-```bat
 uvicorn main:app --reload --port 8000
 ```
 
 Health check:
 
-```text
-http://127.0.0.1:8000/health
+`http://127.0.0.1:8000/health`
+
+For an 8 GB Windows development machine, these `.env` values are a good starting point:
+
+```env
+MOCK_MODE=false
+TRANSCRIPTION_BACKEND=local
+RANKING_BACKEND=local
+LOCAL_WHISPER_MODEL=tiny.en
+LOCAL_WHISPER_DEVICE=cpu
+LOCAL_WHISPER_COMPUTE_TYPE=int8
 ```
 
-You want `transcription_backend: "local"`, `ranking_backend: "local"`, and `ffmpeg_available: true`.
-
-Start the web app in another terminal as before:
+## Run the web app
 
 ```bat
 cd apps\web
 npm install
+copy .env.local.example .env.local
 npm run dev
 ```
 
-Open `http://localhost:3000`, upload a 2–5 minute talking-head video, and click **Analyze real video**.
+Open `http://localhost:3000`.
 
-## Later: higher-quality ranking
+## Local files
 
-Once API billing is enabled, change only:
-
-```env
-RANKING_BACKEND=openai
-```
-
-That keeps local transcription (cheap/free development) while using the hosted model for smarter clip selection.
+Real uploads and generated clips are stored under `apps/worker/work/<job-id>/` while you develop. The `work/` directory is ignored by Git.
 
 ## Next milestone
 
-Take a selected timestamp and render a real 9:16 MP4 with captions.
+Take a generated cut and create a true short-form composition:
+
+1. 9:16 vertical canvas
+2. smart crop/reframe
+3. burned/animated captions
+4. optional title/hook layer
+5. speaker/face tracking

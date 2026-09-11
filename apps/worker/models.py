@@ -26,3 +26,20 @@ class AnalyzeResponse(BaseModel):
     source_url: str
     mock: bool
     clips: list[ClipCandidate]
+    job_id: str | None = None
+
+
+class RenderClipRequest(BaseModel):
+    job_id: str = Field(min_length=1, max_length=100)
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+
+
+class RenderClipResponse(BaseModel):
+    job_id: str
+    filename: str
+    start: float
+    end: float
+    duration: float
+    media_url: str
+    download_url: str

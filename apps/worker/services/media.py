@@ -38,3 +38,52 @@ def extract_audio_chunks(media_path: str, output_dir: str, chunk_seconds: int = 
     if not chunks:
         raise RuntimeError("FFmpeg did not produce any audio chunks.")
     return chunks
+
+
+def cut_clip(media_path: str, output_path: str, start: float, end: float) -> str:
+    """Render a broadly compatible MP4 for one selected timestamp range."""
+    require_ffmpeg()
+
+    source = Path(media_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Media file not found: {source}")
+
+    if start < 0:
+        raise ValueError("Clip start must be zero or greater.")
+    if end <= start:
+        raise ValueError("Clip end must be greater than clip start.")
+
+    duration = end - start
+    if duration > 180:
+        raise ValueError("Development clips are limited to 180 seconds.")
+
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    # Re-encode instead of stream-copying so cuts are frame-accurate and the result
+    # plays reliably in browsers even when the source uses an awkward codec/keyframe layout.
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-ss", f"{start:.3f}",
+        "-i", str(source),
+        "-t", f"{duration:.3f}",
+        "-map", "0:v:0",
+        "-map", "0:a?",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "22",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        str(target),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = (completed.stderr or "FFmpeg failed to render the clip.").strip()
+        raise RuntimeError(detail[-3000:])
+
+    if not target.exists() or target.stat().st_size == 0:
+        raise RuntimeError("FFmpeg finished but no clip file was produced.")
+
+    return str(target)

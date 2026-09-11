@@ -91,3 +91,16 @@ h1 { font-size: clamp(44px, 7vw, 76px); line-height: .98; letter-spacing: -.055e
 .fileHelp, .localNote { color: var(--muted); font-size: 12px; }
 .primary.wide { width: 100%; margin-top: 10px; min-height: 52px; }
 .localNote { margin: 10px 4px 2px; text-align: center; line-height: 1.5; }
+
+.renderButton {
+  width: 100%; margin-top: 18px; min-height: 44px; border-radius: 11px;
+  border: 1px solid #3f3f46; background: #18181c; color: #f4f4f5;
+  font-weight: 800; transition: transform .12s ease, border-color .12s ease;
+}
+.renderButton:hover:not(:disabled) { transform: translateY(-1px); border-color: #6d5cae; }
+.renderButton:disabled { opacity: .55; cursor: not-allowed; }
+.renderedClip { margin-top: 13px; border-top: 1px solid var(--line); padding-top: 13px; }
+.clipVideo { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; border-radius: 11px; display: block; }
+.renderMeta { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:9px; color:var(--muted); font-size:12px; }
+.downloadLink { color:#c4b5fd; text-decoration:none; font-weight:800; }
+.downloadLink:hover { text-decoration:underline; }
