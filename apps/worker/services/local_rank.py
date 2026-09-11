@@ -1,5 +1,6 @@
 import re
 from models import ClipCandidate, TranscriptSegment
+from services.copywriter import generate_clip_copy_local
 
 HOOK_PHRASES = (
     "why ", "how ", "here's", "here is", "the biggest", "most people",
@@ -332,7 +333,8 @@ def rank_clip_candidates_local(
                 ClipCandidate(
                     start=round(padded_start, 2),
                     end=round(padded_end, 2),
-                    title=_title_from_text(text),
+                    title=generate_clip_copy_local(text, "auto").title,
+                    social_caption=generate_clip_copy_local(text, "auto").social_caption,
                     hook=_first_sentence(text),
                     score=score,
                     reasons=reasons or ["Complete local moment"],
@@ -366,7 +368,8 @@ def rank_clip_candidates_local(
             ClipCandidate(
                 start=round(max(0.0, segments[0].start - 0.12), 2),
                 end=round(segments[-1].end + 0.16, 2),
-                title=_title_from_text(text),
+                title=generate_clip_copy_local(text, "auto").title,
+                    social_caption=generate_clip_copy_local(text, "auto").social_caption,
                 hook=_first_sentence(text),
                 score=score,
                 reasons=reasons or ["Best available local candidate"],

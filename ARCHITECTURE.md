@@ -1,14 +1,12 @@
-# Clip AI architecture — Milestone 12
+# Clip AI architecture — Milestone 14
 
 ## Inputs
 
 ### Your video
-A normal local video upload is saved into a per-job work directory and processed directly.
+A local video upload is saved into a per-project work directory and processed directly.
 
 ### YouTube link
-The worker validates the URL and uses YouTube's public oEmbed endpoint for lightweight metadata (title, channel, thumbnail). The user then supplies an authorised local source file for processing. The source URL is retained as the project identity in the analysis response and `youtube_source.json`.
-
-This separation is deliberate: YouTube metadata and actual video-byte ingestion are different concerns. We do not make the core clip engine depend on an unofficial downloader.
+The worker validates the URL and uses YouTube oEmbed for public title/channel/thumbnail metadata. The user supplies an authorised local source file for the actual processing. The YouTube identity stays attached to the saved project.
 
 ## Processing pipeline
 
@@ -17,28 +15,46 @@ source video
 → faster-whisper word-level transcript
 → local/OpenAI ranking backend
 → suggested moments
+→ dialogue-grounded title/social-copy generation
 → lightweight visual sampling
 → adaptive layout plan
 → ASS caption generation
 → FFmpeg final render
 
-## Job storage
+## Dialogue-based copy
 
-`apps/worker/work/<job_id>/` may contain:
+`services/copywriter.py` reconstructs only the transcript text overlapping a selected clip. It produces:
 
-- `source.<ext>`
-- `youtube_source.json` for YouTube projects
-- `audio/` chunks
-- `transcript.json`
-- `clips/` generated media and reframe plans
+- a concise clip title
+- a social post caption
+- Auto / Viral / Clean / Cinematic variants
 
-The work directory is ignored by Git.
+The UI can regenerate or manually edit both fields. Saved edits are written into the project's clip metadata.
 
-## YouTube endpoints
+### Copy endpoints
 
-- `GET /youtube-info?url=...` — validates a YouTube URL and returns public oEmbed metadata.
-- `POST /analyze-youtube-owned` — multipart request containing the YouTube URL, rights confirmation, source video file, and requested clip count.
+- `POST /projects/{job_id}/clips/{clip_index}/generate-copy` — regenerate title/social caption from that clip's dialogue
+- `PATCH /projects/{job_id}/clips/{clip_index}/copy` — save manual title/social-caption edits
 
-## Future hosted import
+## Persistent project storage
 
-A future hosted product can add account/cloud-source connectors without changing the analysis engine. The source-ingestion layer is intentionally separate from transcription, ranking, and rendering.
+`apps/worker/work/<job_id>/` can contain:
+
+- `project.json` — project identity, source type, clip suggestions, titles/social captions and timestamps
+- `source.<ext>` — original source video
+- `youtube_source.json` — YouTube source reference when relevant
+- `audio/` — temporary/extracted audio chunks
+- `transcript.json` — word-timestamped transcript
+- `clips/` — generated Shorts, original cuts, subtitles and reframe plans
+
+The entire `work/` directory is ignored by Git.
+
+## Project endpoints
+
+- `GET /projects` — saved project summaries, render counts and storage use
+- `GET /projects/{job_id}` — saved clip suggestions plus existing render files
+- `DELETE /projects/{job_id}` — removes the entire local project directory
+
+## Future hosted version
+
+The current project index is intentionally file-based for local development. A hosted version can move project metadata into PostgreSQL/Supabase and media into object storage while keeping the processing worker interface largely unchanged. The copy generation layer can also be switched to a hosted language model later without changing the project schema.

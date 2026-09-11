@@ -38,6 +38,23 @@ class ClipCandidate(BaseModel):
     hook: str
     score: int = Field(ge=0, le=100)
     reasons: list[str]
+    social_caption: str | None = None
+
+
+class ClipCopyGenerateRequest(BaseModel):
+    style: Literal["auto", "viral", "clean", "cinematic"] = "auto"
+
+
+class ClipCopyUpdateRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    social_caption: str = Field(default="", max_length=500)
+
+
+class ClipCopyResponse(BaseModel):
+    clip_index: int
+    title: str
+    social_caption: str
+    style: Literal["auto", "viral", "clean", "cinematic"] = "auto"
 
 
 class AnalyzeResponse(BaseModel):
@@ -78,3 +95,31 @@ class RenderClipResponse(BaseModel):
     caption_offset_ms: int | None = None
     word_timed_captions: bool | None = None
     caption_zone: str | None = None
+
+
+class SavedRender(BaseModel):
+    filename: str
+    kind: Literal["short", "original"]
+    media_url: str
+    download_url: str
+    size_bytes: int = 0
+    created_at: str
+
+
+class ProjectSummary(BaseModel):
+    job_id: str
+    title: str
+    source_type: Literal["upload", "youtube"]
+    source_url: str | None = None
+    author_name: str | None = None
+    thumbnail_url: str | None = None
+    created_at: str
+    updated_at: str
+    clip_count: int = 0
+    render_count: int = 0
+    storage_bytes: int = 0
+
+
+class ProjectDetail(ProjectSummary):
+    clips: list[ClipCandidate] = Field(default_factory=list)
+    renders: list[SavedRender] = Field(default_factory=list)

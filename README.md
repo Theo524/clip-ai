@@ -1,18 +1,19 @@
-# Clip AI — Milestone 12
+# Clip AI — Milestone 14
 
-Clip AI turns long-form video into short-form clips with local transcription, local moment ranking, adaptive layouts, smart captions, and FFmpeg rendering.
+Clip AI turns long-form video into short-form clips with local transcription, local moment ranking, adaptive layouts, smart captions, persistent projects, and now dialogue-based clip titles/social copy.
 
-## New in Milestone 12
+## New in Milestone 14
 
-The **YouTube link** tab is now a real project flow instead of a mock demo.
+Each suggested moment now gets useful copy generated from the exact dialogue inside that selected clip.
 
-1. Paste a YouTube URL.
-2. Clip AI reads the public title/channel/thumbnail through YouTube oEmbed.
-3. Confirm that you own the video or have permission to process it.
-4. Choose the matching source video file from your computer.
-5. The video runs through the same real local Whisper + ranking + render pipeline as a normal upload, while preserving the YouTube URL as the project source.
+- The clip title is no longer just a chopped transcript opening.
+- Open **Title & post caption** on any clip to edit the generated title.
+- A short social post caption is generated from the same dialogue.
+- Regenerate copy as **Auto**, **Viral**, **Clean**, or **Cinematic**.
+- Manual edits can be saved back into the local project.
+- Reopened projects keep the saved title and social caption.
 
-This version intentionally does **not** depend on an unofficial arbitrary YouTube downloader. The official YouTube APIs do not provide a general endpoint for downloading the source bytes of public videos, so the development build keeps ingestion reliable and rights-aware by pairing the link with an authorised local source file.
+The local copywriter deliberately stays grounded in the spoken dialogue; it shortens and reframes wording but does not invent claims that were not in the source.
 
 ## Run
 
@@ -38,8 +39,10 @@ Open `http://localhost:3000`.
 
 - Local faster-whisper transcription with word timestamps
 - Local clip ranking with cleaner moment boundaries
+- Dialogue-based title + social caption generation
 - Smart 9:16 reframing with Fill / Focus / Backdrop / Preserve
 - Viral, Cinematic, Clean, and Meme caption presets
 - Stable word highlighting and caption-safe placement
-- YouTube project metadata + authorised source-file analysis
+- Personal upload + YouTube project workflows
+- Persistent local Projects/history screen
 - FFmpeg short rendering and original clip export

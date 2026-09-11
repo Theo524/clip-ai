@@ -5,20 +5,23 @@ from urllib.request import Request, urlopen
 import re
 import shutil
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from models import AnalyzeRequest, AnalyzeResponse, RenderClipRequest, RenderClipResponse, TranscriptSegment, YouTubeInfoResponse
+from models import AnalyzeRequest, AnalyzeResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ProjectDetail, ProjectSummary, RenderClipRequest, RenderClipResponse, TranscriptSegment, YouTubeInfoResponse
 from settings import settings
 from services.media import cut_clip, extract_audio_chunks, render_adaptive_short
 from services.captions import write_clip_ass
 from services.mock import mock_clips
 from services.reframe import load_reframe_plan, plan_smart_reframe, save_reframe_plan
 from services.layouts import choose_caption_style, choose_caption_zone, choose_layout, normalize_frame_size
+from services.projects import directory_size, load_project, rendered_media, save_project
+from services.copywriter import dialogue_for_range, generate_clip_copy_local
 
-app = FastAPI(title="Clip AI Worker", version="0.12.0")
+app = FastAPI(title="Clip AI Worker", version="0.14.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -146,6 +149,10 @@ def analyze_local_media(
     max_clips: int,
     *,
     job_id: str | None = None,
+    project_title: str | None = None,
+    source_type: str = "upload",
+    author_name: str | None = None,
+    thumbnail_url: str | None = None,
 ) -> AnalyzeResponse:
     try:
         resolved_job_id = job_id or str(uuid.uuid4())
@@ -177,6 +184,27 @@ def analyze_local_media(
         )
 
         clips = _rank_segments(segments, max_clips=max_clips)
+        # Copy is generated from the exact dialogue inside each selected clip. This keeps
+        # titles useful without inventing facts that were not spoken in the source.
+        for clip in clips:
+            dialogue = dialogue_for_range(segments, clip.start, clip.end)
+            generated = generate_clip_copy_local(dialogue or clip.hook, "auto")
+            if settings.ranking_backend.lower().strip() == "local" or not clip.title.strip():
+                clip.title = generated.title
+            clip.social_caption = generated.social_caption
+
+        save_project(
+            job_dir,
+            {
+                "job_id": resolved_job_id,
+                "title": project_title or Path(media_path).name,
+                "source_type": source_type,
+                "source_url": source_label if source_type == "youtube" else None,
+                "author_name": author_name,
+                "thumbnail_url": thumbnail_url,
+                "clips": [clip.model_dump() for clip in clips],
+            },
+        )
         return AnalyzeResponse(
             source_url=source_label,
             mock=False,
@@ -216,6 +244,9 @@ async def analyze_youtube_owned(
     rights_confirmed: bool = Form(...),
     file: UploadFile = File(...),
     max_clips: int = Form(default=6),
+    title: str | None = Form(default=None),
+    author_name: str | None = Form(default=None),
+    thumbnail_url: str | None = Form(default=None),
 ):
     if not is_youtube_url(source_url):
         raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
@@ -247,7 +278,16 @@ async def analyze_youtube_owned(
         json.dumps({"source_url": source_url, "source_filename": filename}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    return analyze_local_media(str(saved_path), source_url, max_clips, job_id=job_id)
+    return analyze_local_media(
+        str(saved_path),
+        source_url,
+        max_clips,
+        job_id=job_id,
+        project_title=title or filename,
+        source_type="youtube",
+        author_name=author_name,
+        thumbnail_url=thumbnail_url,
+    )
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)
@@ -307,7 +347,129 @@ async def analyze_upload(
     finally:
         await file.close()
 
-    return analyze_local_media(str(saved_path), filename, max_clips, job_id=job_id)
+    return analyze_local_media(
+        str(saved_path),
+        filename,
+        max_clips,
+        job_id=job_id,
+        project_title=filename,
+        source_type="upload",
+    )
+
+
+def _project_summary(job_dir: Path, data: dict) -> ProjectSummary:
+    job_id = str(data.get("job_id") or job_dir.name)
+    renders = rendered_media(job_dir, job_id)
+    clips = data.get("clips") or []
+    return ProjectSummary(
+        job_id=job_id,
+        title=str(data.get("title") or "Untitled project"),
+        source_type="youtube" if data.get("source_type") == "youtube" else "upload",
+        source_url=data.get("source_url"),
+        author_name=data.get("author_name"),
+        thumbnail_url=data.get("thumbnail_url"),
+        created_at=str(data.get("created_at") or data.get("updated_at") or datetime.now(timezone.utc).isoformat()),
+        updated_at=str(data.get("updated_at") or data.get("created_at") or datetime.now(timezone.utc).isoformat()),
+        clip_count=len(clips),
+        render_count=len(renders),
+        storage_bytes=directory_size(job_dir),
+    )
+
+
+@app.get("/projects", response_model=list[ProjectSummary])
+def list_projects():
+    root = Path(settings.work_dir)
+    if not root.exists():
+        return []
+    projects: list[ProjectSummary] = []
+    for job_dir in root.iterdir():
+        if not job_dir.is_dir() or not SAFE_ID.fullmatch(job_dir.name):
+            continue
+        data = load_project(job_dir)
+        if data is None:
+            continue
+        projects.append(_project_summary(job_dir, data))
+    projects.sort(key=lambda item: item.updated_at, reverse=True)
+    return projects
+
+
+@app.get("/projects/{job_id}", response_model=ProjectDetail)
+def get_project(job_id: str):
+    job_dir = _job_dir(job_id)
+    data = load_project(job_dir)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Saved project not found.")
+    summary = _project_summary(job_dir, data)
+    return ProjectDetail(
+        **summary.model_dump(),
+        clips=data.get("clips") or [],
+        renders=rendered_media(job_dir, job_id),
+    )
+
+
+def _saved_clip(job_id: str, clip_index: int) -> tuple[Path, dict, ClipCandidate]:
+    job_dir = _job_dir(job_id)
+    data = load_project(job_dir)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Saved project not found.")
+    raw_clips = data.get("clips") or []
+    if clip_index < 0 or clip_index >= len(raw_clips):
+        raise HTTPException(status_code=404, detail="Saved clip not found.")
+    return job_dir, data, ClipCandidate.model_validate(raw_clips[clip_index])
+
+
+@app.post("/projects/{job_id}/clips/{clip_index}/generate-copy", response_model=ClipCopyResponse)
+def generate_clip_copy(job_id: str, clip_index: int, request: ClipCopyGenerateRequest):
+    job_dir, data, clip = _saved_clip(job_id, clip_index)
+    transcript = _load_transcript(job_id)
+    dialogue = dialogue_for_range(transcript, clip.start, clip.end)
+    generated = generate_clip_copy_local(dialogue or clip.hook, request.style)
+
+    clips = list(data.get("clips") or [])
+    clips[clip_index] = {
+        **clips[clip_index],
+        "title": generated.title,
+        "social_caption": generated.social_caption,
+    }
+    save_project(job_dir, {**data, "clips": clips})
+    return ClipCopyResponse(
+        clip_index=clip_index,
+        title=generated.title,
+        social_caption=generated.social_caption,
+        style=generated.style,
+    )
+
+
+@app.patch("/projects/{job_id}/clips/{clip_index}/copy", response_model=ClipCopyResponse)
+def update_clip_copy(job_id: str, clip_index: int, request: ClipCopyUpdateRequest):
+    job_dir, data, _clip = _saved_clip(job_id, clip_index)
+    title = request.title.strip()
+    social_caption = request.social_caption.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="Title cannot be empty.")
+
+    clips = list(data.get("clips") or [])
+    clips[clip_index] = {
+        **clips[clip_index],
+        "title": title,
+        "social_caption": social_caption,
+    }
+    save_project(job_dir, {**data, "clips": clips})
+    return ClipCopyResponse(
+        clip_index=clip_index,
+        title=title,
+        social_caption=social_caption,
+        style="auto",
+    )
+
+
+@app.delete("/projects/{job_id}")
+def delete_project(job_id: str):
+    job_dir = _job_dir(job_id)
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Saved project not found.")
+    shutil.rmtree(job_dir)
+    return {"ok": True, "job_id": job_id}
 
 
 @app.post("/render-clip", response_model=RenderClipResponse)
@@ -330,6 +492,10 @@ def render_clip(request: RenderClipRequest):
             cut_clip(str(source), str(output), request.start, request.end)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Clip render failed: {exc}") from exc
+
+    project = load_project(job_dir)
+    if project is not None:
+        save_project(job_dir, project)
 
     media_url = f"/media/{request.job_id}/{filename}"
     return RenderClipResponse(
@@ -413,6 +579,10 @@ def render_short(request: RenderClipRequest):
             )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Short render failed: {exc}") from exc
+
+    project = load_project(job_dir)
+    if project is not None:
+        save_project(job_dir, project)
 
     media_url = f"/media/{request.job_id}/{filename}"
     return RenderClipResponse(

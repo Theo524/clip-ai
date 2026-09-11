@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 type Clip = {
   start: number;
@@ -9,6 +9,7 @@ type Clip = {
   hook: string;
   score: number;
   reasons: string[];
+  social_caption?: string | null;
 };
 
 type AnalyzeResponse = {
@@ -26,9 +27,35 @@ type YouTubeInfo = {
   provider_name: string;
 };
 
+type SavedRender = {
+  filename: string;
+  kind: "short" | "original";
+  media_url: string;
+  download_url: string;
+  size_bytes: number;
+  created_at: string;
+};
+
+type ProjectDetail = {
+  job_id: string;
+  title: string;
+  source_type: "upload" | "youtube";
+  source_url?: string | null;
+  author_name?: string | null;
+  thumbnail_url?: string | null;
+  created_at: string;
+  updated_at: string;
+  clip_count: number;
+  render_count: number;
+  storage_bytes: number;
+  clips: Clip[];
+  renders: SavedRender[];
+};
+
 type LayoutMode = "auto" | "fill" | "focus" | "backdrop" | "preserve";
 type CaptionStyle = "auto" | "viral" | "cinematic" | "clean" | "meme";
 type FrameSize = "compact" | "balanced" | "immersive";
+type CopyStyle = "auto" | "viral" | "clean" | "cinematic";
 
 type RenderResponse = {
   job_id: string;
@@ -114,8 +141,40 @@ export default function Home() {
   const [captions, setCaptions] = useState<Record<number, CaptionStyle>>({});
   const [frameSizes, setFrameSizes] = useState<Record<number, FrameSize>>({});
   const [captionOffsets, setCaptionOffsets] = useState<Record<number, number>>({});
+  const [openedProjectTitle, setOpenedProjectTitle] = useState<string | null>(null);
+  const [savedRenders, setSavedRenders] = useState<SavedRender[]>([]);
+  const [copyStyles, setCopyStyles] = useState<Record<number, CopyStyle>>({});
+  const [copyBusy, setCopyBusy] = useState<number | null>(null);
+  const [copySaved, setCopySaved] = useState<number | null>(null);
 
   const workerUrl = process.env.NEXT_PUBLIC_WORKER_URL || "http://127.0.0.1:8000";
+
+  useEffect(() => {
+    const jobId = new URLSearchParams(window.location.search).get("project");
+    if (jobId) loadProject(jobId);
+  }, []);
+
+  async function loadProject(jobId: string) {
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch(`${workerUrl}/projects/${encodeURIComponent(jobId)}`);
+      const data: ProjectDetail & { detail?: string } = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not open this project");
+      setOpenedProjectTitle(data.title);
+      setSavedRenders(data.renders || []);
+      setResult({
+        source_url: data.source_url || data.title,
+        mock: false,
+        clips: data.clips,
+        job_id: data.job_id,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open this project");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function submitUpload(e: FormEvent) {
     e.preventDefault();
@@ -128,6 +187,10 @@ export default function Home() {
     setCaptions({});
     setFrameSizes({});
     setCaptionOffsets({});
+    setSavedRenders([]);
+    setCopyStyles({});
+    setCopySaved(null);
+    setOpenedProjectTitle(null);
 
     try {
       const form = new FormData();
@@ -137,6 +200,8 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || data.error || "Analysis failed");
       setResult(data);
+      setOpenedProjectTitle(file.name);
+      if (data.job_id) window.history.replaceState({}, "", `/?project=${data.job_id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -151,6 +216,10 @@ export default function Home() {
     setYoutubeInfo(null);
     setResult(null);
     setRendered({});
+    setSavedRenders([]);
+    setCopyStyles({});
+    setCopySaved(null);
+    setOpenedProjectTitle(null);
 
     try {
       const res = await fetch(`${workerUrl}/youtube-info?url=${encodeURIComponent(url)}`);
@@ -182,14 +251,75 @@ export default function Home() {
       form.append("rights_confirmed", "true");
       form.append("file", youtubeFile);
       form.append("max_clips", "6");
+      form.append("title", youtubeInfo.title);
+      if (youtubeInfo.author_name) form.append("author_name", youtubeInfo.author_name);
+      if (youtubeInfo.thumbnail_url) form.append("thumbnail_url", youtubeInfo.thumbnail_url);
       const res = await fetch(`${workerUrl}/analyze-youtube-owned`, { method: "POST", body: form });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || data.error || "YouTube project analysis failed");
       setResult(data);
+      setOpenedProjectTitle(youtubeInfo.title);
+      if (data.job_id) window.history.replaceState({}, "", `/?project=${data.job_id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
+    }
+  }
+
+  function updateClipLocal(index: number, patch: Partial<Clip>) {
+    setResult((current) => {
+      if (!current) return current;
+      const clips = [...current.clips];
+      clips[index] = { ...clips[index], ...patch };
+      return { ...current, clips };
+    });
+    setCopySaved(null);
+  }
+
+  async function regenerateCopy(index: number) {
+    if (!result?.job_id) return;
+    setError("");
+    setCopyBusy(index);
+    setCopySaved(null);
+    try {
+      const res = await fetch(`${workerUrl}/projects/${result.job_id}/clips/${index}/generate-copy`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ style: copyStyles[index] || "auto" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not regenerate title");
+      updateClipLocal(index, { title: data.title, social_caption: data.social_caption });
+      setCopySaved(index);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not regenerate clip copy");
+    } finally {
+      setCopyBusy(null);
+    }
+  }
+
+  async function saveCopy(index: number) {
+    if (!result?.job_id) return;
+    const clip = result.clips[index];
+    if (!clip) return;
+    setError("");
+    setCopyBusy(index);
+    setCopySaved(null);
+    try {
+      const res = await fetch(`${workerUrl}/projects/${result.job_id}/clips/${index}/copy`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: clip.title, social_caption: clip.social_caption || "" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not save title");
+      updateClipLocal(index, { title: data.title, social_caption: data.social_caption });
+      setCopySaved(index);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save clip copy");
+    } finally {
+      setCopyBusy(null);
     }
   }
 
@@ -224,6 +354,11 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || data.error || "Render failed");
       setRendered((current) => ({ ...current, [index]: data }));
+      const projectRes = await fetch(`${workerUrl}/projects/${result.job_id}`);
+      if (projectRes.ok) {
+        const projectData: ProjectDetail = await projectRes.json();
+        setSavedRenders(projectData.renders || []);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong while rendering");
     } finally {
@@ -236,6 +371,11 @@ export default function Home() {
     setError("");
     setResult(null);
     setRendered({});
+    setSavedRenders([]);
+    setCopyStyles({});
+    setCopySaved(null);
+    setOpenedProjectTitle(null);
+    window.history.replaceState({}, "", "/");
     if (nextMode !== "youtube") {
       setYoutubeInfo(null);
       setYoutubeFile(null);
@@ -246,8 +386,11 @@ export default function Home() {
   return (
     <div className="shell">
       <nav className="nav">
-        <div className="brand">Clip AI</div>
-        <div className="badge">Milestone 12 · YouTube projects</div>
+        <a className="brand brandLink" href="/">Clip AI</a>
+        <div className="navActions">
+          <a className="navLink" href="/projects">Projects</a>
+          <div className="badge">Milestone 14 · smart titles</div>
+        </div>
       </nav>
 
       <main className="main">
@@ -356,8 +499,8 @@ export default function Home() {
           <section className="results">
             <div className="resultsHead">
               <div>
-                <h2>Your strongest moments</h2>
-                <p>{result.clips.length} candidates ranked by short-form potential.</p>
+                <h2>{openedProjectTitle ? openedProjectTitle : "Your strongest moments"}</h2>
+                <p>{result.clips.length} candidates ranked by short-form potential.{openedProjectTitle ? " This project is saved automatically." : ""}</p>
               </div>
               <div className="badge">{result.mock ? "Demo analysis" : "Real local transcript"}</div>
             </div>
@@ -403,6 +546,26 @@ export default function Home() {
               </div>
             </details>
 
+            {savedRenders.length > 0 && (
+              <details className="savedRendersPanel">
+                <summary>
+                  <span><strong>Saved renders</strong><small>{savedRenders.length} files already in this project</small></span>
+                  <span className="guideChevron">⌄</span>
+                </summary>
+                <div className="savedRendersGrid">
+                  {savedRenders.map((media) => (
+                    <article className="savedRenderCard" key={media.filename}>
+                      <video controls preload="metadata" src={`${workerUrl}${media.media_url}`} />
+                      <div>
+                        <span>{media.kind === "short" ? "Vertical Short" : "Original clip"}</span>
+                        <a href={`${workerUrl}${media.download_url}`}>Download</a>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </details>
+            )}
+
             <div className="clipGrid">
               {result.clips.map((clip, index) => {
                 const renderedClip = rendered[index];
@@ -428,6 +591,60 @@ export default function Home() {
                       <span>Starts with</span>
                       <p>“{clip.hook}”</p>
                     </div>
+
+                    {!result.mock && result.job_id && (
+                      <details className="copyPanel">
+                        <summary>
+                          <span>Title & post caption</span>
+                          <small>Generated from the dialogue · editable</small>
+                        </summary>
+                        <div className="copyBody">
+                          <label className="copyField">
+                            <span>Clip title</span>
+                            <input
+                              value={clip.title}
+                              maxLength={120}
+                              onChange={(e) => updateClipLocal(index, { title: e.target.value })}
+                              disabled={copyBusy === index}
+                            />
+                          </label>
+                          <label className="copyField">
+                            <span>Social post caption</span>
+                            <textarea
+                              value={clip.social_caption || ""}
+                              maxLength={500}
+                              rows={3}
+                              placeholder="Clip AI can generate a short post caption from this dialogue."
+                              onChange={(e) => updateClipLocal(index, { social_caption: e.target.value })}
+                              disabled={copyBusy === index}
+                            />
+                          </label>
+                          <div className="copyTools">
+                            <label>
+                              <span>Regenerate style</span>
+                              <select
+                                value={copyStyles[index] || "auto"}
+                                onChange={(e) => setCopyStyles((current) => ({ ...current, [index]: e.target.value as CopyStyle }))}
+                                disabled={copyBusy === index}
+                              >
+                                <option value="auto">Auto</option>
+                                <option value="viral">Viral</option>
+                                <option value="clean">Clean</option>
+                                <option value="cinematic">Cinematic</option>
+                              </select>
+                            </label>
+                            <button className="copyButton" type="button" onClick={() => regenerateCopy(index)} disabled={copyBusy !== null}>
+                              {copyBusy === index ? "Working…" : "Regenerate"}
+                            </button>
+                            <button className="copyButton saveCopyButton" type="button" onClick={() => saveCopy(index)} disabled={copyBusy !== null || !clip.title.trim()}>
+                              {copySaved === index ? "Saved ✓" : "Save edits"}
+                            </button>
+                          </div>
+                          <p className="copyNote">Titles and post captions are based only on the words spoken in this selected moment. You can rewrite either before exporting.</p>
+                        </div>
+                      </details>
+                    )}
+
                     <details className="whyPicked">
                       <summary>Why Clip AI picked this moment</summary>
                       <div className="reasons">
@@ -548,7 +765,7 @@ export default function Home() {
                 );
               })}
             </div>
-            <div className="footNote">Milestone 11 keeps Auto simple, moves expert controls out of the way, explains every format in plain English, and removes the doubled-text effect from Viral/Meme word pops.</div>
+            <div className="footNote">Milestone 14 generates dialogue-based clip titles and social captions, keeps them editable, and saves your changes with the project.</div>
           </section>
         )}
       </main>
