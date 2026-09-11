@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
+from urllib.request import Request, urlopen
 import re
 import shutil
 import uuid
@@ -9,7 +10,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from models import AnalyzeRequest, AnalyzeResponse, RenderClipRequest, RenderClipResponse, TranscriptSegment
+from models import AnalyzeRequest, AnalyzeResponse, RenderClipRequest, RenderClipResponse, TranscriptSegment, YouTubeInfoResponse
 from settings import settings
 from services.media import cut_clip, extract_audio_chunks, render_adaptive_short
 from services.captions import write_clip_ass
@@ -17,7 +18,7 @@ from services.mock import mock_clips
 from services.reframe import load_reframe_plan, plan_smart_reframe, save_reframe_plan
 from services.layouts import choose_caption_style, choose_caption_zone, choose_layout, normalize_frame_size
 
-app = FastAPI(title="Clip AI Worker", version="0.8.0")
+app = FastAPI(title="Clip AI Worker", version="0.12.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -34,6 +35,30 @@ SAFE_FILENAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 def is_youtube_url(value: str) -> bool:
     host = (urlparse(value).hostname or "").lower()
     return host in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+
+
+def fetch_youtube_info(source_url: str) -> YouTubeInfoResponse:
+    if not is_youtube_url(source_url):
+        raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
+
+    endpoint = "https://www.youtube.com/oembed?" + urlencode({"url": source_url, "format": "json"})
+    request = Request(endpoint, headers={"User-Agent": "ClipAI/0.12"})
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Clip AI could not read this YouTube video's public metadata. Check the link and your internet connection.",
+        ) from exc
+
+    return YouTubeInfoResponse(
+        source_url=source_url,
+        title=str(payload.get("title") or "YouTube video"),
+        author_name=payload.get("author_name"),
+        thumbnail_url=payload.get("thumbnail_url"),
+        provider_name=str(payload.get("provider_name") or "YouTube"),
+    )
 
 
 def _job_dir(job_id: str) -> Path:
@@ -178,6 +203,51 @@ def health():
         "ffmpeg_available": shutil.which("ffmpeg") is not None,
         "word_timestamps": True,
     }
+
+
+@app.get("/youtube-info", response_model=YouTubeInfoResponse)
+def youtube_info(url: str = Query(..., min_length=10, max_length=2048)):
+    return fetch_youtube_info(url)
+
+
+@app.post("/analyze-youtube-owned", response_model=AnalyzeResponse)
+async def analyze_youtube_owned(
+    source_url: str = Form(...),
+    rights_confirmed: bool = Form(...),
+    file: UploadFile = File(...),
+    max_clips: int = Form(default=6),
+):
+    if not is_youtube_url(source_url):
+        raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
+    if not rights_confirmed:
+        raise HTTPException(status_code=422, detail="Confirm that you own this video or have permission to process it.")
+    if max_clips < 1 or max_clips > 12:
+        raise HTTPException(status_code=422, detail="max_clips must be between 1 and 12.")
+    if settings.mock_mode:
+        raise HTTPException(status_code=409, detail="Real analysis is disabled while MOCK_MODE=true.")
+
+    filename = file.filename or "video.mp4"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Choose an MP4, MOV, MKV, WEBM, M4V or AVI source file.")
+
+    job_id = str(uuid.uuid4())
+    job_dir = _job_dir(job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    saved_path = job_dir / f"source{suffix}"
+
+    try:
+        with saved_path.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                output.write(chunk)
+    finally:
+        await file.close()
+
+    (job_dir / "youtube_source.json").write_text(
+        json.dumps({"source_url": source_url, "source_filename": filename}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return analyze_local_media(str(saved_path), source_url, max_clips, job_id=job_id)
 
 
 @app.post("/analyze", response_model=AnalyzeResponse)

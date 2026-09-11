@@ -275,3 +275,76 @@ h1 { font-size: clamp(44px, 7vw, 76px); line-height: .98; letter-spacing: -.055e
   .simpleActions { grid-template-columns: 1fr; }
   .simpleActions .secondaryButton { width: 100%; }
 }
+
+/* Milestone 12 · YouTube projects */
+.youtubeFlow { margin-top: 18px; }
+.youtubeFlow .inputCard { margin-top: 0; }
+.youtubeImportCard {
+  max-width: 760px;
+  margin: 12px auto 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel);
+  text-align: left;
+  box-shadow: 0 20px 80px rgba(0,0,0,.28);
+}
+.youtubeMeta {
+  display: grid;
+  grid-template-columns: 150px minmax(0,1fr);
+  gap: 14px;
+  align-items: center;
+}
+.youtubeMeta img {
+  width: 150px;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: 12px;
+  background: #000;
+}
+.youtubeMeta > div { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.youtubeMeta strong { font-size: 15px; line-height: 1.35; }
+.youtubeMeta small { color: var(--muted); font-size: 12px; }
+.youtubeKicker { color: #c4b5fd; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; font-weight: 800; }
+.youtubeSourceHelp {
+  margin-top: 14px;
+  padding: 12px 13px;
+  border: 1px solid #2d2d34;
+  background: #0d0d10;
+  border-radius: 12px;
+}
+.youtubeSourceHelp strong { font-size: 12px; }
+.youtubeSourceHelp p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.compactFilePicker {
+  margin-top: 12px;
+  min-height: 76px;
+  padding: 13px 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  border: 1px dashed #404047;
+  border-radius: 12px;
+  background: #0d0d10;
+  cursor: pointer;
+}
+.compactFilePicker input { display: none; }
+.compactFilePicker span { font-size: 12px; font-weight: 800; }
+.compactFilePicker small { color: var(--muted); font-size: 10px; }
+.rightsCheck {
+  margin-top: 12px;
+  padding: 10px 11px;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  border-radius: 10px;
+  background: #121216;
+  color: #c8c8cf;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.rightsCheck input { margin-top: 2px; accent-color: #8b5cf6; }
+@media (max-width: 620px) {
+  .youtubeMeta { grid-template-columns: 1fr; }
+  .youtubeMeta img { width: 100%; }
+}

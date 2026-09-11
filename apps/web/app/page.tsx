@@ -18,6 +18,14 @@ type AnalyzeResponse = {
   job_id?: string | null;
 };
 
+type YouTubeInfo = {
+  source_url: string;
+  title: string;
+  author_name?: string | null;
+  thumbnail_url?: string | null;
+  provider_name: string;
+};
+
 type LayoutMode = "auto" | "fill" | "focus" | "backdrop" | "preserve";
 type CaptionStyle = "auto" | "viral" | "cinematic" | "clean" | "meme";
 type FrameSize = "compact" | "balanced" | "immersive";
@@ -93,6 +101,10 @@ export default function Home() {
   const [mode, setMode] = useState<Mode>("upload");
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const [youtubeInfo, setYoutubeInfo] = useState<YouTubeInfo | null>(null);
+  const [youtubeFile, setYoutubeFile] = useState<File | null>(null);
+  const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const [youtubeChecking, setYoutubeChecking] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
@@ -135,18 +147,44 @@ export default function Home() {
   async function submitYoutube(e: FormEvent) {
     e.preventDefault();
     setError("");
-    setLoading(true);
+    setYoutubeChecking(true);
+    setYoutubeInfo(null);
     setResult(null);
     setRendered({});
 
     try {
-      const res = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ source_url: url, max_clips: 6 }),
-      });
+      const res = await fetch(`${workerUrl}/youtube-info?url=${encodeURIComponent(url)}`);
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || data.error || "Analysis failed");
+      if (!res.ok) throw new Error(data.detail || data.error || "Could not read this YouTube link");
+      setYoutubeInfo(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setYoutubeChecking(false);
+    }
+  }
+
+  async function submitYoutubeOwned(e: FormEvent) {
+    e.preventDefault();
+    if (!youtubeInfo || !youtubeFile || !rightsConfirmed) return;
+    setError("");
+    setLoading(true);
+    setResult(null);
+    setRendered({});
+    setLayouts({});
+    setCaptions({});
+    setFrameSizes({});
+    setCaptionOffsets({});
+
+    try {
+      const form = new FormData();
+      form.append("source_url", youtubeInfo.source_url);
+      form.append("rights_confirmed", "true");
+      form.append("file", youtubeFile);
+      form.append("max_clips", "6");
+      const res = await fetch(`${workerUrl}/analyze-youtube-owned`, { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || data.error || "YouTube project analysis failed");
       setResult(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
@@ -198,13 +236,18 @@ export default function Home() {
     setError("");
     setResult(null);
     setRendered({});
+    if (nextMode !== "youtube") {
+      setYoutubeInfo(null);
+      setYoutubeFile(null);
+      setRightsConfirmed(false);
+    }
   }
 
   return (
     <div className="shell">
       <nav className="nav">
         <div className="brand">Clip AI</div>
-        <div className="badge">Milestone 11 · simpler controls</div>
+        <div className="badge">Milestone 12 · YouTube projects</div>
       </nav>
 
       <main className="main">
@@ -242,19 +285,69 @@ export default function Home() {
               <p className="localNote">Local Whisper + lightweight visual sampling. Short renders stay at 720×1280 so development remains practical on your PC.</p>
             </form>
           ) : (
-            <form className="inputCard" onSubmit={submitYoutube}>
-              <input
-                className="urlInput"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://www.youtube.com/watch?v=..."
-                type="url"
-                required
-              />
-              <button className="primary" disabled={loading || !url}>
-                {loading ? "Finding moments…" : "Try link demo"}
-              </button>
-            </form>
+            <div className="youtubeFlow">
+              <form className="inputCard" onSubmit={submitYoutube}>
+                <input
+                  className="urlInput"
+                  value={url}
+                  onChange={(e) => {
+                    setUrl(e.target.value);
+                    setYoutubeInfo(null);
+                    setYoutubeFile(null);
+                    setRightsConfirmed(false);
+                  }}
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  type="url"
+                  required
+                />
+                <button className="primary" disabled={youtubeChecking || !url}>
+                  {youtubeChecking ? "Checking link…" : "Check YouTube link"}
+                </button>
+              </form>
+
+              {youtubeInfo && (
+                <form className="youtubeImportCard" onSubmit={submitYoutubeOwned}>
+                  <div className="youtubeMeta">
+                    {youtubeInfo.thumbnail_url && (
+                      <img src={youtubeInfo.thumbnail_url} alt="YouTube video thumbnail" />
+                    )}
+                    <div>
+                      <span className="youtubeKicker">YouTube video recognised</span>
+                      <strong>{youtubeInfo.title}</strong>
+                      {youtubeInfo.author_name && <small>{youtubeInfo.author_name}</small>}
+                    </div>
+                  </div>
+
+                  <div className="youtubeSourceHelp">
+                    <strong>Add the source video</strong>
+                    <p>For now, Clip AI uses the YouTube link for the project identity and a video file you own for the actual processing. This keeps the workflow reliable instead of depending on an unofficial downloader.</p>
+                  </div>
+
+                  <label className="compactFilePicker">
+                    <span>{youtubeFile ? youtubeFile.name : "Choose matching source video"}</span>
+                    <small>MP4, MOV, MKV, WEBM, M4V or AVI</small>
+                    <input
+                      type="file"
+                      accept="video/mp4,video/quicktime,video/x-matroska,video/webm,.m4v,.avi"
+                      onChange={(e) => setYoutubeFile(e.target.files?.[0] || null)}
+                    />
+                  </label>
+
+                  <label className="rightsCheck">
+                    <input
+                      type="checkbox"
+                      checked={rightsConfirmed}
+                      onChange={(e) => setRightsConfirmed(e.target.checked)}
+                    />
+                    <span>I own this video or have permission to process and repurpose it.</span>
+                  </label>
+
+                  <button className="primary wide" disabled={loading || !youtubeFile || !rightsConfirmed}>
+                    {loading ? "Analyzing YouTube project…" : "Analyze YouTube project"}
+                  </button>
+                </form>
+              )}
+            </div>
           )}
           {error && <div className="error">{error}</div>}
         </section>

@@ -1,22 +1,20 @@
-# Clip AI — Milestone 11
+# Clip AI — Milestone 12
 
-Milestone 11 focuses on clarity and caption polish rather than adding more controls.
+Clip AI turns long-form video into short-form clips with local transcription, local moment ranking, adaptive layouts, smart captions, and FFmpeg rendering.
 
-## What changed
+## New in Milestone 12
 
-- The two source tabs remain: **Your video** and **YouTube link**.
-- Post-analysis rendering is now beginner-first: press **Create Short** and Auto handles the normal choices.
-- Framing, video size, caption style, and timing are hidden in an optional **Customize** panel.
-- Added a plain-English **60-second guide** explaining 9:16 output, Fill, Focus, Backdrop, Preserve, Compact/Balanced/Immersive, and all caption styles.
-- Clip cards are easier to scan: the transcript/hook preview is compact and selection reasons are collapsed.
-- Viral Pop and Meme captions no longer use a base text layer plus a moving highlight layer. The active word is styled in a single visible phrase layer, fixing the doubled/ghost text that could show beneath a larger word.
-- Existing word-level timing, smart caption-safe placement, adaptive framing, and Milestone 10 moment selection remain intact.
+The **YouTube link** tab is now a real project flow instead of a mock demo.
 
-## YouTube tab
+1. Paste a YouTube URL.
+2. Clip AI reads the public title/channel/thumbnail through YouTube oEmbed.
+3. Confirm that you own the video or have permission to process it.
+4. Choose the matching source video file from your computer.
+5. The video runs through the same real local Whisper + ranking + render pipeline as a normal upload, while preserving the YouTube URL as the project source.
 
-The YouTube tab stays in the product because it is part of the intended workflow. The current starter still treats it as a demo path; production link ingestion should use an authorised/owned-content import flow rather than depending on brittle arbitrary-video downloading.
+This version intentionally does **not** depend on an unofficial arbitrary YouTube downloader. The official YouTube APIs do not provide a general endpoint for downloading the source bytes of public videos, so the development build keeps ingestion reliable and rights-aware by pairing the link with an authorised local source file.
 
-## Local development
+## Run
 
 Backend:
 
@@ -35,3 +33,13 @@ npm run dev
 ```
 
 Open `http://localhost:3000`.
+
+## Current pipeline
+
+- Local faster-whisper transcription with word timestamps
+- Local clip ranking with cleaner moment boundaries
+- Smart 9:16 reframing with Fill / Focus / Backdrop / Preserve
+- Viral, Cinematic, Clean, and Meme caption presets
+- Stable word highlighting and caption-safe placement
+- YouTube project metadata + authorised source-file analysis
+- FFmpeg short rendering and original clip export

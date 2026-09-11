@@ -9,6 +9,14 @@ class AnalyzeRequest(BaseModel):
     max_clips: int = Field(default=6, ge=1, le=12)
 
 
+class YouTubeInfoResponse(BaseModel):
+    source_url: str
+    title: str
+    author_name: str | None = None
+    thumbnail_url: str | None = None
+    provider_name: str = "YouTube"
+
+
 class TranscriptWord(BaseModel):
     start: float
     end: float

@@ -1,37 +1,44 @@
-# Clip AI architecture — Milestone 11
+# Clip AI architecture — Milestone 12
 
-The processing pipeline remains:
+## Inputs
 
-1. upload/import source
-2. FFmpeg audio extraction
-3. local Whisper transcription with word timestamps
-4. local/OpenAI moment ranking
-5. visual sampling for reframe and caption-safe zones
-6. FFmpeg render + ASS captions
+### Your video
+A normal local video upload is saved into a per-job work directory and processed directly.
 
-## UX principle
+### YouTube link
+The worker validates the URL and uses YouTube's public oEmbed endpoint for lightweight metadata (title, channel, thumbnail). The user then supplies an authorised local source file for processing. The source URL is retained as the project identity in the analysis response and `youtube_source.json`.
 
-The default product path is now intentionally one decision:
+This separation is deliberate: YouTube metadata and actual video-byte ingestion are different concerns. We do not make the core clip engine depend on an unofficial downloader.
 
-`pick clip → Create Short`
+## Processing pipeline
 
-Auto determines the normal framing and caption style. Manual controls live behind **Customize** and advanced caption offset lives one level deeper.
+source video
+→ FFmpeg audio chunks
+→ faster-whisper word-level transcript
+→ local/OpenAI ranking backend
+→ suggested moments
+→ lightweight visual sampling
+→ adaptive layout plan
+→ ASS caption generation
+→ FFmpeg final render
 
-## Caption renderer change
+## Job storage
 
-Viral/Meme previously used two simultaneously visible layers:
+`apps/worker/work/<job_id>/` may contain:
 
-- persistent base phrase
-- active-word overlay
+- `source.<ext>`
+- `youtube_source.json` for YouTube projects
+- `audio/` chunks
+- `transcript.json`
+- `clips/` generated media and reframe plans
 
-When the active word moved/scaled, the unchanged word underneath could become visible and look doubled. Milestone 11 renders one complete phrase per active-word interval. The event has no word-to-word fade or movement; only the active word receives colour and a small scale transform. This removes the ghost layer while preserving word-level sync.
+The work directory is ignored by Git.
 
-## Format guide
+## YouTube endpoints
 
-The web UI explains:
+- `GET /youtube-info?url=...` — validates a YouTube URL and returns public oEmbed metadata.
+- `POST /analyze-youtube-owned` — multipart request containing the YouTube URL, rights confirmation, source video file, and requested clip count.
 
-- final local output: 720×1280 (9:16)
-- Fill / Focus / Backdrop / Preserve
-- Focus/Backdrop window sizes: Compact / Balanced / Immersive
-- Viral Pop / Cinematic / Clean / Meme
-- Auto as the recommended beginner option
+## Future hosted import
+
+A future hosted product can add account/cloud-source connectors without changing the analysis engine. The source-ingestion layer is intentionally separate from transcription, ranking, and rendering.
