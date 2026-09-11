@@ -117,7 +117,7 @@ def _candidate_score(
     end_text: str,
     gap_before: float,
     gap_after: float,
-) -> tuple[int, list[str]]:
+) -> tuple[int, list[str], dict[str, int], str]:
     lower = text.lower()
     words = _words(text)
     word_count = len(words)
@@ -125,52 +125,81 @@ def _candidate_score(
     opening = _clean(start_text).lower().lstrip('"“‘')
     ending = _clean(end_text).lower()
 
+    # Keep the proven v10 heuristic, but expose the editorial dimensions separately
+    # and blend them back into the final score. This makes the ranking easier to
+    # understand and less dependent on one lucky keyword.
     score = 36.0
     reasons: list[tuple[int, str]] = []
 
-    # Short-form duration preference. 24-48s is the strongest local sweet spot,
-    # while 18-60s remains usable for a complete idea.
+    hook = 35.0
+    standalone = 35.0
+    payoff = 28.0
+    retention = 38.0
+    clarity = 42.0
+
     if 24 <= duration <= 48:
         score += 15
+        retention += 24
         reasons.append((15, "Strong Shorts length"))
     elif 18 <= duration <= 60:
         score += 8
+        retention += 13
         reasons.append((8, "Usable short-form length"))
     else:
         score -= min(18, abs(duration - 36) * 0.65)
+        retention -= 12
 
-    # Opening quality matters a lot. We want a clip that can stand on its own.
     clean_start = _starts_clean(start_text)
     if clean_start:
         score += 8
+        hook += 10
+        standalone += 20
+        clarity += 7
         reasons.append((8, "Clean standalone opening"))
     else:
         score -= 15
+        hook -= 18
+        standalone -= 24
 
-    if any(opening.startswith(p) or p in opening[:110] for p in HOOK_PHRASES):
+    strong_hook = any(opening.startswith(p) or p in opening[:110] for p in HOOK_PHRASES)
+    if strong_hook:
         score += 14
+        hook += 35
+        retention += 8
         reasons.append((14, "Strong opening hook"))
     if "?" in _clean(start_text)[:180]:
         score += 8
+        hook += 20
+        retention += 7
         reasons.append((8, "Question-led hook"))
     if re.search(r"\b\d+(?:\.\d+)?%?\b|[$£€]\s?\d", _clean(start_text)[:220]):
         score += 5
+        hook += 10
+        clarity += 5
         reasons.append((5, "Specific opening detail"))
 
-    # Natural speech boundaries reduce awkward cuts.
     if gap_before >= 0.35:
         score += 4
+        standalone += 10
+        clarity += 4
         reasons.append((4, "Natural start boundary"))
-    if _ends_clean(end_text):
+    clean_end = _ends_clean(end_text)
+    if clean_end:
         score += 8
+        standalone += 16
+        payoff += 8
+        clarity += 8
         reasons.append((8, "Clean ending"))
     else:
         score -= 12
+        standalone -= 18
+        payoff -= 12
     if gap_after >= 0.35:
         score += 4
+        standalone += 8
+        payoff += 5
         reasons.append((4, "Natural end boundary"))
 
-    # Arc/payoff: reward clips that move somewhere rather than being one flat excerpt.
     latter_half = lower[len(lower) // 2 :]
     ending_lower = _clean(end_text).lower()
     payoff_positions = [lower.rfind(cue) for cue in PAYOFF_PHRASES if cue in lower]
@@ -178,63 +207,101 @@ def _candidate_score(
     payoff_in_ending = any(cue in ending_lower for cue in PAYOFF_PHRASES)
     if payoff_in_ending:
         score += 13
+        payoff += 45
+        retention += 8
         reasons.append((13, "Ends on a clear payoff"))
     elif any(cue in latter_half for cue in PAYOFF_PHRASES):
         score += 7
+        payoff += 28
         reasons.append((7, "Contains a payoff or takeaway"))
-        # If the clip already lands its point and then keeps rambling, prefer the
-        # tighter endpoint. This is one of the biggest differences between a
-        # useful clip and a merely interesting transcript window.
         if last_payoff >= 0:
             trailing_fraction = (len(lower) - last_payoff) / max(len(lower), 1)
             if trailing_fraction > 0.20:
                 score -= 18
+                payoff -= 20
+                retention -= 8
     if not _starts_clean(end_text) and not payoff_in_ending:
         score -= 10
+        payoff -= 12
     if any(cue in lower for cue in PIVOT_PHRASES):
         score += 6
+        payoff += 12
+        retention += 8
         reasons.append((6, "Has a story/idea turn"))
 
     if re.search(r"\b\d+(?:\.\d+)?%?\b|[$£€]\s?\d", text):
         score += 5
+        clarity += 8
+        retention += 4
         reasons.append((5, "Specific detail or number"))
     if any(term in lower for term in INTEREST_TERMS):
         score += 6
+        retention += 15
+        hook += 7
         reasons.append((6, "High-interest language"))
 
-    # Speaking density and substance.
     if 100 <= wpm <= 205:
         score += 6
+        clarity += 10
+        retention += 10
         reasons.append((6, "Good speaking density"))
     elif wpm < 65 or wpm > 250:
         score -= 9
+        clarity -= 15
+        retention -= 12
 
     if 45 <= word_count <= 155:
         score += 6
+        clarity += 10
     elif word_count < 28:
         score -= 12
+        clarity -= 18
+        payoff -= 8
     elif word_count > 190:
         score -= 7
+        clarity -= 10
 
-    # Penalise filler-heavy and repetitive windows.
     unigram_fillers = sum(1 for word in words if word in FILLERS)
     phrase_fillers = sum(lower.count(filler) for filler in FILLERS if " " in filler)
     filler_ratio = (unigram_fillers + phrase_fillers) / max(word_count, 1)
     if filler_ratio > 0.07:
-        score -= min(12, 5 + filler_ratio * 50)
+        penalty = min(12, 5 + filler_ratio * 50)
+        score -= penalty
+        clarity -= penalty * 1.5
+        retention -= penalty
 
     content_words = [w for w in words if len(w) > 3]
     if content_words:
         unique_ratio = len(set(content_words)) / len(content_words)
         if unique_ratio < 0.42:
             score -= 6
+            clarity -= 10
+            retention -= 8
+        elif unique_ratio > 0.66:
+            clarity += 5
 
-    # Penalise endings that audibly promise more context.
     ending_words = _words(ending[-100:])
     if ending_words and ending_words[-1] in TRAILING_DEPENDENCIES:
         score -= 12
+        payoff -= 18
+        standalone -= 10
 
-    # Keep the most meaningful, non-duplicate explanations.
+    breakdown = {
+        "Hook": max(1, min(99, round(hook))),
+        "Standalone": max(1, min(99, round(standalone))),
+        "Payoff": max(1, min(99, round(payoff))),
+        "Retention": max(1, min(99, round(retention))),
+        "Clarity": max(1, min(99, round(clarity))),
+    }
+    weighted_quality = (
+        breakdown["Hook"] * 0.25
+        + breakdown["Standalone"] * 0.22
+        + breakdown["Payoff"] * 0.22
+        + breakdown["Retention"] * 0.19
+        + breakdown["Clarity"] * 0.12
+    )
+    score = score * 0.62 + weighted_quality * 0.38
+
     dedup: list[str] = []
     for _weight, reason in sorted(reasons, reverse=True):
         if reason not in dedup:
@@ -242,8 +309,13 @@ def _candidate_score(
         if len(dedup) >= 4:
             break
 
-    return max(1, min(98, round(score))), dedup
+    strongest = sorted(breakdown.items(), key=lambda item: item[1], reverse=True)[:2]
+    weak = min(breakdown.items(), key=lambda item: item[1])
+    note = f"Best at {strongest[0][0].lower()} + {strongest[1][0].lower()}."
+    if weak[1] < 45:
+        note += f" {weak[0]} is the main trade-off."
 
+    return max(1, min(98, round(score))), dedup, breakdown, note
 
 def _overlap_ratio(a: ClipCandidate, b: ClipCandidate) -> float:
     intersection = max(0.0, min(a.end, b.end) - max(a.start, b.start))
@@ -315,7 +387,7 @@ def rank_clip_candidates_local(
                 continue
 
             text = _clean(" ".join(pieces))
-            score, reasons = _candidate_score(
+            score, reasons, breakdown, editor_note = _candidate_score(
                 text=text,
                 duration=duration,
                 start_text=start_seg.text,
@@ -329,15 +401,18 @@ def rank_clip_candidates_local(
             # A tiny pad prevents the generated video from cutting the first/last phoneme.
             padded_start = max(0.0, start - 0.12)
             padded_end = seg.end + 0.16
+            generated_copy = generate_clip_copy_local(text, "auto")
             candidates.append(
                 ClipCandidate(
                     start=round(padded_start, 2),
                     end=round(padded_end, 2),
-                    title=generate_clip_copy_local(text, "auto").title,
-                    social_caption=generate_clip_copy_local(text, "auto").social_caption,
+                    title=generated_copy.title,
+                    social_caption=generated_copy.social_caption,
                     hook=_first_sentence(text),
                     score=score,
                     reasons=reasons or ["Complete local moment"],
+                    score_breakdown=breakdown,
+                    editor_note=editor_note,
                 )
             )
 
@@ -356,7 +431,7 @@ def rank_clip_candidates_local(
     if not selected and segments:
         text = _clean(" ".join(s.text for s in segments))
         duration = segments[-1].end - segments[0].start
-        score, reasons = _candidate_score(
+        score, reasons, breakdown, editor_note = _candidate_score(
             text=text,
             duration=duration,
             start_text=segments[0].text,
@@ -364,15 +439,18 @@ def rank_clip_candidates_local(
             gap_before=10.0,
             gap_after=10.0,
         )
+        generated_copy = generate_clip_copy_local(text, "auto")
         selected.append(
             ClipCandidate(
                 start=round(max(0.0, segments[0].start - 0.12), 2),
                 end=round(segments[-1].end + 0.16, 2),
-                title=generate_clip_copy_local(text, "auto").title,
-                    social_caption=generate_clip_copy_local(text, "auto").social_caption,
+                title=generated_copy.title,
+                social_caption=generated_copy.social_caption,
                 hook=_first_sentence(text),
                 score=score,
                 reasons=reasons or ["Best available local candidate"],
+                score_breakdown=breakdown,
+                editor_note=editor_note,
             )
         )
 

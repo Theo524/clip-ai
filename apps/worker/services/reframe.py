@@ -16,6 +16,7 @@ class ReframePlan:
     face_samples: int = 0
     motion_samples: int = 0
     multi_face_samples: int = 0
+    scene_cut_samples: int = 0
     face_upper_samples: int = 0
     face_middle_samples: int = 0
     face_lower_samples: int = 0
@@ -36,6 +37,7 @@ class ReframePlan:
             face_samples=int(payload.get("face_samples", 0)),
             motion_samples=int(payload.get("motion_samples", 0)),
             multi_face_samples=int(payload.get("multi_face_samples", 0)),
+            scene_cut_samples=int(payload.get("scene_cut_samples", 0)),
             face_upper_samples=int(payload.get("face_upper_samples", 0)),
             face_middle_samples=int(payload.get("face_middle_samples", 0)),
             face_lower_samples=int(payload.get("face_lower_samples", 0)),
@@ -111,6 +113,7 @@ def plan_smart_reframe(
     face_samples = 0
     motion_samples = 0
     multi_face_samples = 0
+    scene_cut_samples = 0
     face_upper_samples = 0
     face_middle_samples = 0
     face_lower_samples = 0
@@ -197,8 +200,12 @@ def plan_smart_reframe(
                 mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
                 changed_fraction = float(cv2.countNonZero(mask)) / float(mask.size)
 
-                # Tiny changes are usually codec noise; almost-full-frame changes are often a cut.
-                if 0.004 <= changed_fraction <= 0.72:
+                # Tiny changes are usually codec noise. Very large full-frame changes
+                # are useful evidence of an edit/scene cut, which makes Auto preserve
+                # more composition instead of treating everything as gameplay motion.
+                if changed_fraction > 0.72:
+                    scene_cut_samples += 1
+                elif 0.004 <= changed_fraction <= 0.72:
                     moments = cv2.moments(mask, binaryImage=True)
                     if moments["m00"] > 0:
                         raw_center = (moments["m10"] / moments["m00"]) / mask.shape[1]
@@ -250,6 +257,7 @@ def plan_smart_reframe(
         face_samples=face_samples,
         motion_samples=motion_samples,
         multi_face_samples=multi_face_samples,
+        scene_cut_samples=scene_cut_samples,
         face_upper_samples=face_upper_samples,
         face_middle_samples=face_middle_samples,
         face_lower_samples=face_lower_samples,

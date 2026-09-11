@@ -3,7 +3,16 @@ from services.reframe import ReframePlan
 
 VALID_LAYOUTS = {"auto", "fill", "focus", "backdrop", "preserve"}
 VALID_CAPTION_STYLES = {"auto", "viral", "cinematic", "clean", "meme"}
-VALID_FRAME_SIZES = {"compact", "balanced", "immersive"}
+VALID_FRAME_SIZES = {"auto", "compact", "balanced", "immersive"}
+
+
+def _ratios(plan: ReframePlan) -> tuple[float, float, float]:
+    sample_count = max(1, plan.sample_count)
+    return (
+        plan.face_samples / sample_count,
+        plan.multi_face_samples / sample_count,
+        getattr(plan, "scene_cut_samples", 0) / sample_count,
+    )
 
 
 def choose_layout(requested: str, plan: ReframePlan) -> str:
@@ -18,22 +27,20 @@ def choose_layout(requested: str, plan: ReframePlan) -> str:
     if plan.mode == "portrait":
         return "preserve"
 
-    sample_count = max(1, plan.sample_count)
-    face_ratio = plan.face_samples / sample_count
-    multi_face_ratio = plan.multi_face_samples / sample_count
+    face_ratio, multi_face_ratio, cut_ratio = _ratios(plan)
     source_ratio = (plan.source_width / plan.source_height) if plan.source_height else 16 / 9
 
-    # A stable single-person shot can use the full vertical crop confidently.
-    if plan.mode == "face" and face_ratio >= 0.40 and multi_face_ratio < 0.20:
+    # Stable, mostly-single-person footage is exactly what a full 9:16 crop is good at.
+    if plan.mode == "face" and face_ratio >= 0.42 and multi_face_ratio < 0.14 and cut_ratio < 0.10:
         return "fill"
 
-    # Multi-person / film-like shots should preserve more scene context in a large
-    # central 4:5-ish window rather than forcing a full 9:16 crop.
-    if multi_face_ratio >= 0.12:
+    # Dialogue scenes / films / multi-person shots need context. Focus keeps a large
+    # central video window without shrinking all the way to a full 16:9 letterbox.
+    if multi_face_ratio >= 0.10 or cut_ratio >= 0.10:
         return "focus"
 
-    # Motion-led footage gets the same central content window but may use a soft
-    # blurred backdrop to keep the phone canvas visually active.
+    # Sustained visual motion (gameplay, demonstrations, screen content) benefits from
+    # keeping a little more context and using the spare canvas as a subdued backdrop.
     if plan.mode == "motion":
         return "backdrop"
 
@@ -50,20 +57,55 @@ def choose_caption_style(requested: str, layout: str, plan: ReframePlan) -> str:
     if requested != "auto":
         return requested
 
-    if layout == "focus":
-        return "cinematic"
+    face_ratio, multi_face_ratio, cut_ratio = _ratios(plan)
+
     if layout == "fill" and plan.mode == "face":
         return "viral"
-    if layout == "preserve":
-        return "clean"
     if layout == "backdrop" and plan.mode == "motion":
         return "meme"
+    if layout == "preserve":
+        return "clean"
+    if layout == "focus":
+        # Focus exists primarily to preserve wider composition (films, dialogue, wide
+        # scenes), so restrained cinematic captions remain the safest automatic style.
+        return "cinematic"
     return "clean"
+
+
+def choose_frame_size(requested: str | None, layout: str, plan: ReframePlan) -> str:
+    value = (requested or "auto").lower().strip()
+    if value not in VALID_FRAME_SIZES:
+        value = "auto"
+    if value != "auto":
+        return value
+
+    if layout not in {"focus", "backdrop"}:
+        return "balanced"
+
+    _face_ratio, multi_face_ratio, cut_ratio = _ratios(plan)
+    # Compact preserves more horizontal context, useful for groups and fast scene cuts.
+    if multi_face_ratio >= 0.16 or cut_ratio >= 0.14:
+        return "compact"
+    return "balanced"
+
+
+def auto_profile(layout: str, caption_style: str, plan: ReframePlan) -> str:
+    if layout == "preserve":
+        return "Already vertical"
+    if layout == "fill" and plan.mode == "face":
+        return "Talking head"
+    if layout == "focus" and (plan.multi_face_samples > 0 or getattr(plan, "scene_cut_samples", 0) > 0):
+        return "Cinematic / group scene"
+    if layout == "backdrop" and plan.mode == "motion":
+        return "Motion / gameplay"
+    if caption_style == "cinematic":
+        return "Wide dialogue scene"
+    return "Wide / contextual footage"
 
 
 def normalize_frame_size(value: str | None) -> str:
     value = (value or "balanced").lower().strip()
-    return value if value in VALID_FRAME_SIZES else "balanced"
+    return value if value in {"compact", "balanced", "immersive"} else "balanced"
 
 
 def content_window(frame_size: str, width: int = 720, height: int = 1280) -> tuple[int, int, int, int]:
@@ -86,11 +128,7 @@ def content_window(frame_size: str, width: int = 720, height: int = 1280) -> tup
 
 
 def choose_caption_zone(style: str, layout: str, plan: ReframePlan) -> str:
-    """Choose an in-picture caption band while trying not to cover faces.
-
-    This is intentionally lightweight: the reframe pass already samples faces, so
-    we reuse its vertical occupancy summary rather than running another detector.
-    """
+    """Choose an in-picture caption band while trying not to cover faces."""
     style = (style or "clean").lower().strip()
     layout = (layout or "fill").lower().strip()
 
@@ -107,13 +145,10 @@ def choose_caption_zone(style: str, layout: str, plan: ReframePlan) -> str:
         "lower": max(0, plan.face_lower_samples),
     }
 
-    # No reliable face evidence: keep the style's natural placement.
     total_face_bands = sum(counts.values())
     if total_face_bands == 0:
         return preferences[0]
 
-    # Small preference penalty means we only move away from the natural band when
-    # another band is meaningfully less occupied by faces.
     preference_penalty = {zone: index * 0.18 for index, zone in enumerate(preferences)}
     scores = {
         zone: (counts[zone] / total_face_bands) + preference_penalty.get(zone, 0.5)

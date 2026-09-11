@@ -41,3 +41,28 @@ def test_caption_zone_avoids_face_heavy_band():
     assert choose_caption_zone("viral", "fill", middle_face) == "lower"
     assert choose_caption_zone("cinematic", "focus", no_faces) == "lower"
     assert choose_caption_zone("viral", "fill", no_faces) == "middle"
+
+
+def test_auto_frame_size_preserves_group_context():
+    from services.layouts import choose_frame_size
+
+    group_scene = ReframePlan(
+        "face", [(0.0, 0.5)], 1920, 1080,
+        sample_count=10, face_samples=8, multi_face_samples=4,
+    )
+    single_face = ReframePlan(
+        "face", [(0.0, 0.5)], 1920, 1080,
+        sample_count=10, face_samples=8, multi_face_samples=0,
+    )
+
+    assert choose_frame_size("auto", "focus", group_scene) == "compact"
+    assert choose_frame_size("auto", "focus", single_face) == "balanced"
+    assert choose_frame_size("immersive", "focus", group_scene) == "immersive"
+
+
+def test_scene_cut_evidence_pushes_auto_toward_focus():
+    cut_heavy = ReframePlan(
+        "motion", [(0.0, 0.5)], 1920, 1080,
+        sample_count=10, motion_samples=5, scene_cut_samples=3,
+    )
+    assert choose_layout("auto", cut_heavy) == "focus"

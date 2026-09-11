@@ -1,42 +1,62 @@
-# Clip AI v16 architecture
+# Clip AI v17 architecture
 
 ```text
 Upload / authorised YouTube project
             ↓
 FFmpeg audio extraction
             ↓
-faster-whisper (segment + word timestamps + confidence)
+faster-whisper
+(segment + word timestamps + confidence)
             ↓
-local/OpenAI clip ranking
+local/OpenAI moment ranking
+            ↓
+editor score model
+  Hook
+  Standalone context
+  Payoff
+  Retention
+  Clarity
+            ↓
+Best 3 + editor explanations
             ↓
 smart title + social caption
             ↓
-subject-aware reframe plan
+subject / scene sampling
+  faces + groups
+  motion
+  scene-cut evidence
+            ↓
+Auto layout profile
+  stable single face → Fill + Viral
+  group / cut-heavy scene → Focus + Cinematic
+  motion/gameplay → Backdrop + Meme
+  portrait → Preserve + Clean
             ↓
 caption phrase engine
-  - punctuation + pause boundaries
-  - style-specific phrase lengths
-  - dangling-fragment rebalance
-  - low-confidence filler filtering
-  - exact word highlighting
+  punctuation + pause boundaries
+  style-specific grouping
+  word-level highlighting
+  platform safe-zones
             ↓
-platform safe-zone adjustment
+sequential batch render (optional)
             ↓
-FFmpeg 9:16 render
-            ↓
-suggested cover-frame extraction
+FFmpeg 9:16 render + cover frame
             ↓
 projects/history + ready-to-post panel
 ```
 
-## Caption philosophy
+## Ranking model
 
-Caption timing remains grounded in Whisper word timestamps. v16 does not rewrite spoken dialogue with a language model; it only chooses which reliable tokens to display together and where phrase boundaries should fall. Very low-confidence filler/noise tokens can be hidden, but substantive words are preserved.
+The local ranker still works without API credits. v17 keeps the proven boundary/hook/payoff heuristic but also produces five explicit editorial subscores. The final score blends the original heuristic with those dimensions, reducing the chance that one keyword alone dominates ranking.
 
-## Platform presets
+The top three are presentation/UI choices, not separate copies of the clips. They point to the same candidate records shown in the full details grid below.
 
-Shorts, TikTok and Reels all still export 720×1280 locally. The preset primarily changes lower-caption safe zones to reduce collisions with platform interface chrome.
+## Auto layout
 
-## Cover frames
+The lightweight OpenCV sampling pass now records sampled scene-cut evidence as well as faces, multi-person frames and motion. This helps distinguish a stable talking-head shot from a wider edited/cinematic scene.
 
-After rendering a Short, FFmpeg extracts a JPEG at roughly 34% into the finished clip. This is a suggested cover preview, not yet a full automatic thumbnail-ranking system.
+Auto frame size can choose Compact for group/cut-heavy Focus clips to preserve more horizontal context. Manual Compact/Balanced/Immersive settings always override Auto.
+
+## Batch rendering
+
+`Render all 3` deliberately renders sequentially in the browser by calling the existing `/render-short` endpoint for each top clip. This avoids multiplying RAM/CPU pressure on an 8 GB development machine and keeps the single-render pipeline as the source of truth.

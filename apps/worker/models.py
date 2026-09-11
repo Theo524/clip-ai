@@ -39,6 +39,8 @@ class ClipCandidate(BaseModel):
     score: int = Field(ge=0, le=100)
     reasons: list[str]
     social_caption: str | None = None
+    score_breakdown: dict[str, int] = Field(default_factory=dict)
+    editor_note: str | None = None
 
 
 class ClipCopyGenerateRequest(BaseModel):
@@ -70,7 +72,7 @@ class RenderClipRequest(BaseModel):
     end: float = Field(gt=0)
     layout_mode: Literal["auto", "fill", "focus", "backdrop", "preserve"] = "auto"
     caption_style: Literal["auto", "viral", "cinematic", "clean", "meme"] = "auto"
-    frame_size: Literal["compact", "balanced", "immersive"] = "balanced"
+    frame_size: Literal["auto", "compact", "balanced", "immersive"] = "auto"
     caption_offset_ms: int = Field(default=0, ge=-1000, le=1000)
     platform: Literal["auto", "shorts", "tiktok", "reels"] = "auto"
 
@@ -98,6 +100,7 @@ class RenderClipResponse(BaseModel):
     caption_zone: str | None = None
     platform: str | None = None
     cover_url: str | None = None
+    auto_profile: str | None = None
 
 
 class SavedRender(BaseModel):

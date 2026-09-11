@@ -17,6 +17,7 @@ HIGH_INTEREST = (
     "mistake", "secret", "truth", "problem", "wrong", "never", "always",
     "money", "million", "billion", "failed", "failure", "risk", "crazy",
     "shocked", "surprised", "changed", "important", "dangerous", "love", "hate",
+    "regret", "realised", "realized", "learned", "lost", "won", "almost",
 )
 
 PAYOFF_CUES = (
@@ -24,6 +25,8 @@ PAYOFF_CUES = (
     "in the end", "the answer", "which means", "so now", "i learned", "i realised",
     "i realized", "eventually",
 )
+
+CONTRAST_CUES = (" but ", " however ", " until ", " instead ", " turns out ", " except ")
 
 
 @dataclass(frozen=True)
@@ -85,20 +88,23 @@ def _sentence_score(sentence: str, index: int, total: int) -> float:
     if index == 0:
         score += 4
     if "?" in sentence:
-        score += 5
+        score += 6
     if any(term in lower for term in HIGH_INTEREST):
-        score += 5
+        score += 6
     if re.search(r"\b\d+(?:\.\d+)?%?\b|[$£€]\s?\d", sentence):
-        score += 3
-    if any(cue in lower for cue in PAYOFF_CUES):
         score += 4
-    word_count = len(sentence.split())
-    if 5 <= word_count <= 18:
+    if any(cue in lower for cue in PAYOFF_CUES):
+        score += 5
+    if any(cue in f" {lower} " for cue in CONTRAST_CUES):
         score += 3
+    word_count = len(sentence.split())
+    if 5 <= word_count <= 16:
+        score += 4
+    elif word_count > 24:
+        score -= 2
     if index == total - 1 and total > 1:
         score += 1
     return score
-
 
 def _core_sentence(text: str) -> str:
     sentences = _sentences(text)
@@ -110,6 +116,22 @@ def _core_sentence(text: str) -> str:
         reverse=True,
     )
     return _strip_filler_start(ranked[0][1])
+
+
+def _supporting_sentence(text: str, core: str) -> str:
+    sentences = _sentences(text)
+    if len(sentences) < 2:
+        return ""
+    candidates = [sentence for sentence in sentences if _clean(sentence).lower() != _clean(core).lower()]
+    if not candidates:
+        return ""
+    # Prefer a payoff / consequence sentence for the post caption rather than
+    # repeating the same hook that became the title.
+    for sentence in reversed(candidates):
+        lower = sentence.lower()
+        if any(cue in lower for cue in PAYOFF_CUES) or any(cue in f" {lower} " for cue in CONTRAST_CUES):
+            return _strip_filler_start(sentence)
+    return _strip_filler_start(candidates[-1])
 
 
 def _sentence_case(text: str) -> str:
@@ -145,6 +167,9 @@ def _make_title(text: str, style: TitleStyle) -> str:
         (r"^the biggest mistake (?:was|is)\s+", "The Biggest Mistake: "),
         (r"^the problem (?:was|is)\s+", "The Problem: "),
         (r"^the truth (?:was|is)\s+", "The Truth: "),
+        (r"^the reason (?:was|is)\s+", "The Real Reason: "),
+        (r"^the secret (?:was|is)\s+", "The Secret: "),
+        (r"^i was wrong about\s+", "I Was Wrong About "),
         (r"^i learned (?:that\s+)?", "What I Learned: "),
         (r"^i realised (?:that\s+)?", "What I Realised: "),
         (r"^i realized (?:that\s+)?", "What I Realized: "),
@@ -190,40 +215,33 @@ def _make_social_caption(text: str, style: TitleStyle, title: str) -> str:
     if not sentences:
         return title
 
-    first = _strip_filler_start(sentences[0])
-    payoff = ""
-    for sentence in reversed(sentences[1:]):
-        lower = sentence.lower()
-        if any(cue in lower for cue in PAYOFF_CUES):
-            payoff = sentence
-            break
-    if not payoff and len(sentences) > 1:
-        payoff = sentences[-1]
+    core = _core_sentence(text)
+    support = _supporting_sentence(text, core)
+    core_clean = _truncate_words(_strip_filler_start(core), 18, 120)
+    support_clean = _truncate_words(support, 18, 120) if support else ""
 
-    first = _truncate_words(first, 18, 120)
-    payoff = _truncate_words(payoff, 18, 120) if payoff else ""
+    # Avoid making the social caption a copy/paste of the title. Use the next useful
+    # line from the dialogue as the payoff/context whenever possible.
+    title_words = set(re.findall(r"[a-z0-9']+", title.lower()))
+    core_words = set(re.findall(r"[a-z0-9']+", core_clean.lower()))
+    overlap = len(title_words & core_words) / max(1, min(len(title_words), len(core_words)))
+    first = support_clean if overlap > 0.72 and support_clean else core_clean
 
     if style == "cinematic":
-        # Keep cinematic copy restrained and dialogue-led.
-        base = first
-        if payoff and payoff.lower() != first.lower():
-            base = f"{first} — {payoff}"
-        return _ensure_terminal(_sentence_case(_truncate_words(base, 26, 170)))
+        return _ensure_terminal(_sentence_case(_truncate_words(first, 22, 150)))
 
     if style == "viral":
-        base = first
-        if payoff and payoff.lower() != first.lower():
-            base = f"{first} — {payoff}"
-        return _ensure_terminal(_sentence_case(_truncate_words(base, 30, 185)))
+        if support_clean and support_clean.lower() != first.lower():
+            base = f"{first} {support_clean}"
+        else:
+            base = first
+        return _ensure_terminal(_sentence_case(_truncate_words(base, 28, 180)))
 
-    if payoff and payoff.lower() != first.lower():
-        first_sentence = _ensure_terminal(first)
-        payoff_sentence = _ensure_terminal(payoff)
-        base = f"{first_sentence} {payoff_sentence}"
+    if support_clean and support_clean.lower() != first.lower():
+        base = f"{_ensure_terminal(first)} {_ensure_terminal(support_clean)}"
     else:
         base = _ensure_terminal(first)
-    return _ensure_terminal(_sentence_case(_truncate_words(base, 30, 190)))
-
+    return _ensure_terminal(_sentence_case(_truncate_words(base, 28, 185)))
 
 def generate_clip_copy_local(text: str, style: TitleStyle = "auto") -> GeneratedCopy:
     normalized: TitleStyle = style if style in {"auto", "viral", "clean", "cinematic"} else "auto"

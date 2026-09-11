@@ -35,3 +35,14 @@ def test_cinematic_copy_is_restrained():
     )
     assert len(generated.title.split()) <= 7
     assert len(generated.social_caption) <= 170
+
+
+def test_social_caption_uses_supporting_dialogue_when_title_repeats_hook():
+    generated = generate_clip_copy_local(
+        "The biggest mistake I made was hiring too quickly. Three months later, half the team had already left. That's why I now hire slowly and test for values first.",
+        "viral",
+    )
+    assert generated.title
+    assert generated.social_caption
+    assert "hire slowly" in generated.social_caption.lower() or "team" in generated.social_caption.lower()
+    assert generated.social_caption.lower() != generated.title.lower()

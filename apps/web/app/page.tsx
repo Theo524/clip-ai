@@ -10,6 +10,8 @@ type Clip = {
   score: number;
   reasons: string[];
   social_caption?: string | null;
+  score_breakdown?: Record<string, number>;
+  editor_note?: string | null;
 };
 
 type AnalyzeResponse = {
@@ -54,7 +56,7 @@ type ProjectDetail = {
 
 type LayoutMode = "auto" | "fill" | "focus" | "backdrop" | "preserve";
 type CaptionStyle = "auto" | "viral" | "cinematic" | "clean" | "meme";
-type FrameSize = "compact" | "balanced" | "immersive";
+type FrameSize = "auto" | "compact" | "balanced" | "immersive";
 type Platform = "auto" | "shorts" | "tiktok" | "reels";
 type CopyStyle = "auto" | "viral" | "clean" | "cinematic";
 
@@ -81,6 +83,7 @@ type RenderResponse = {
   caption_zone?: "upper" | "middle" | "lower" | null;
   platform?: Platform | null;
   cover_url?: string | null;
+  auto_profile?: string | null;
 };
 
 type Mode = "upload" | "youtube";
@@ -150,6 +153,20 @@ function namedDownloadUrl(url: string, title: string) {
   return `${url}${separator}name=${encodeURIComponent(exportFilename(title))}`;
 }
 
+function topClipIndices(clips: Clip[], limit = 3) {
+  return clips
+    .map((clip, index) => ({ index, score: clip.score }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map((item) => item.index);
+}
+
+function scoreTone(score: number) {
+  if (score >= 85) return "excellent";
+  if (score >= 72) return "strong";
+  return "solid";
+}
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>("upload");
   const [url, setUrl] = useState("");
@@ -174,6 +191,7 @@ export default function Home() {
   const [copyBusy, setCopyBusy] = useState<number | null>(null);
   const [copySaved, setCopySaved] = useState<number | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [batchRendering, setBatchRendering] = useState<{ current: number; total: number } | null>(null);
 
   const workerUrl = process.env.NEXT_PUBLIC_WORKER_URL || "http://127.0.0.1:8000";
 
@@ -364,13 +382,13 @@ export default function Home() {
     }
   }
 
-  async function renderMedia(clip: Clip, index: number, kind: RenderKind) {
+  async function renderMedia(clip: Clip, index: number, kind: RenderKind, quiet = false): Promise<boolean> {
     if (!result?.job_id) {
       setError("This result does not have a real uploaded source attached.");
-      return;
+      return false;
     }
 
-    setError("");
+    if (!quiet) setError("");
     setRendering({ index, kind });
     const endpoint = kind === "short" ? "/render-short" : "/render-clip";
 
@@ -383,7 +401,7 @@ export default function Home() {
       if (kind === "short") {
         body.layout_mode = layouts[index] || "auto";
         body.caption_style = captions[index] || "auto";
-        body.frame_size = frameSizes[index] || "balanced";
+        body.frame_size = frameSizes[index] || "auto";
         body.caption_offset_ms = captionOffsets[index] || 0;
         body.platform = platforms[index] || "auto";
       }
@@ -401,11 +419,28 @@ export default function Home() {
         const projectData: ProjectDetail = await projectRes.json();
         setSavedRenders(projectData.renders || []);
       }
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong while rendering");
+      return false;
     } finally {
       setRendering(null);
     }
+  }
+
+  async function renderBestThree() {
+    if (!result?.job_id || batchRendering) return;
+    const indices = topClipIndices(result.clips, 3);
+    if (!indices.length) return;
+    setError("");
+    setBatchRendering({ current: 0, total: indices.length });
+    for (let step = 0; step < indices.length; step += 1) {
+      const index = indices[step];
+      setBatchRendering({ current: step + 1, total: indices.length });
+      const ok = await renderMedia(result.clips[index], index, "short", true);
+      if (!ok) break;
+    }
+    setBatchRendering(null);
   }
 
   function switchMode(nextMode: Mode) {
@@ -425,13 +460,15 @@ export default function Home() {
     }
   }
 
+  const bestIndices = result ? topClipIndices(result.clips, 3) : [];
+
   return (
     <div className="shell">
       <nav className="nav">
         <a className="brand brandLink" href="/">Clip AI</a>
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
-          <div className="badge">v16 · caption quality + export polish</div>
+          <div className="badge">v17 · smarter picks + batch Auto</div>
         </div>
       </nav>
 
@@ -608,6 +645,72 @@ export default function Home() {
               </details>
             )}
 
+            {!result.mock && bestIndices.length > 0 && (
+              <section className="bestPicksPanel">
+                <div className="bestPicksHead">
+                  <div>
+                    <span className="bestEyebrow">AI EDITOR PICKS</span>
+                    <h3>Best 3 moments</h3>
+                    <p>These have the strongest mix of hook, standalone context, payoff and likely retention.</p>
+                  </div>
+                  <button
+                    className="renderAllButton"
+                    type="button"
+                    onClick={renderBestThree}
+                    disabled={rendering !== null || batchRendering !== null}
+                  >
+                    {batchRendering ? `Rendering ${batchRendering.current}/${batchRendering.total}…` : "Render all 3"}
+                  </button>
+                </div>
+                <div className="bestPicksGrid">
+                  {bestIndices.map((index, rank) => {
+                    const clip = result.clips[index];
+                    const breakdown = clip.score_breakdown || {};
+                    const alreadyRendered = Boolean(rendered[index]?.kind === "short");
+                    return (
+                      <article className="bestPickCard" key={`best-${clip.start}-${index}`}>
+                        <div className="bestPickTop">
+                          <span className="bestRank">#{rank + 1}</span>
+                          <span className={`bestScore ${scoreTone(clip.score)}`}>{clip.score}/100</span>
+                        </div>
+                        <h4>{clip.title}</h4>
+                        <p className="editorNote">{clip.editor_note || clip.reasons.slice(0, 2).join(" · ")}</p>
+                        {Object.keys(breakdown).length > 0 && (
+                          <div className="scoreBreakdown">
+                            {Object.entries(breakdown).map(([label, value]) => (
+                              <div className="scoreMetric" key={label}>
+                                <span>{label}</span>
+                                <div><i style={{ width: `${Math.max(4, Math.min(100, value))}%` }} /></div>
+                                <b>{value}</b>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="bestPickActions">
+                          <span>{fmt(clip.start)} → {fmt(clip.end)}</span>
+                          <button
+                            type="button"
+                            onClick={() => renderMedia(clip, index, "short")}
+                            disabled={rendering !== null || batchRendering !== null}
+                          >
+                            {rendering?.index === index && rendering.kind === "short" ? "Creating…" : alreadyRendered ? "Render again" : "Create Short"}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
+            <div className="allSuggestionsHead">
+              <div>
+                <span>ALL CLIP DETAILS</span>
+                <h3>Fine-tune any suggestion</h3>
+              </div>
+              <p>Best picks are highlighted above; every candidate remains editable below.</p>
+            </div>
+
             <div className="clipGrid">
               {result.clips.map((clip, index) => {
                 const renderedClip = rendered[index];
@@ -619,7 +722,7 @@ export default function Home() {
                 const isVertical = renderedClip?.kind === "short";
                 const selectedLayout = layouts[index] || "auto";
                 const selectedCaption = captions[index] || "auto";
-                const selectedFrameSize = frameSizes[index] || "balanced";
+                const selectedFrameSize = frameSizes[index] || "auto";
                 const selectedOffset = captionOffsets[index] || 0;
                 const selectedPlatform = platforms[index] || "auto";
 
@@ -690,6 +793,14 @@ export default function Home() {
 
                     <details className="whyPicked">
                       <summary>Why Clip AI picked this moment</summary>
+                      {clip.score_breakdown && Object.keys(clip.score_breakdown).length > 0 && (
+                        <div className="miniScoreGrid">
+                          {Object.entries(clip.score_breakdown).map(([label, value]) => (
+                            <span key={label}><b>{label}</b>{value}</span>
+                          ))}
+                        </div>
+                      )}
+                      {clip.editor_note && <p className="whyEditorNote">{clip.editor_note}</p>}
                       <div className="reasons">
                         {clip.reasons.map((reason) => <span className="reason" key={reason}>{reason}</span>)}
                       </div>
@@ -701,14 +812,14 @@ export default function Home() {
                           <button
                             className="renderButton shortButton"
                             onClick={() => renderMedia(clip, index, "short")}
-                            disabled={rendering !== null}
+                            disabled={rendering !== null || batchRendering !== null}
                           >
                             {isShortRendering ? "Creating Short…" : "Create Short"}
                           </button>
                           <button
                             className="renderButton secondaryButton"
                             onClick={() => renderMedia(clip, index, "original")}
-                            disabled={rendering !== null}
+                            disabled={rendering !== null || batchRendering !== null}
                           >
                             {isOriginalRendering ? "Cutting original…" : "Original clip"}
                           </button>
@@ -726,7 +837,7 @@ export default function Home() {
                                 <select
                                   value={selectedPlatform}
                                   onChange={(e) => setPlatforms((current) => ({ ...current, [index]: e.target.value as Platform }))}
-                                  disabled={rendering !== null}
+                                  disabled={rendering !== null || batchRendering !== null}
                                 >
                                   <option value="auto">Auto · recommended</option>
                                   <option value="shorts">YouTube Shorts</option>
@@ -739,7 +850,7 @@ export default function Home() {
                                 <select
                                   value={selectedLayout}
                                   onChange={(e) => setLayouts((current) => ({ ...current, [index]: e.target.value as LayoutMode }))}
-                                  disabled={rendering !== null}
+                                  disabled={rendering !== null || batchRendering !== null}
                                 >
                                   <option value="auto">Auto · recommended</option>
                                   <option value="fill">Fill · full vertical crop</option>
@@ -753,10 +864,11 @@ export default function Home() {
                                 <select
                                   value={selectedFrameSize}
                                   onChange={(e) => setFrameSizes((current) => ({ ...current, [index]: e.target.value as FrameSize }))}
-                                  disabled={rendering !== null}
+                                  disabled={rendering !== null || batchRendering !== null}
                                 >
+                                  <option value="auto">Auto · recommended</option>
                                   <option value="compact">Compact</option>
-                                  <option value="balanced">Balanced · recommended</option>
+                                  <option value="balanced">Balanced</option>
                                   <option value="immersive">Immersive</option>
                                 </select>
                               </label>
@@ -765,7 +877,7 @@ export default function Home() {
                                 <select
                                   value={selectedCaption}
                                   onChange={(e) => setCaptions((current) => ({ ...current, [index]: e.target.value as CaptionStyle }))}
-                                  disabled={rendering !== null}
+                                  disabled={rendering !== null || batchRendering !== null}
                                 >
                                   <option value="auto">Auto · recommended</option>
                                   <option value="viral">Viral Pop</option>
@@ -788,7 +900,7 @@ export default function Home() {
                                   max="500"
                                   step="50"
                                   value={selectedOffset}
-                                  disabled={rendering !== null}
+                                  disabled={rendering !== null || batchRendering !== null}
                                   onChange={(e) => setCaptionOffsets((current) => ({ ...current, [index]: Number(e.target.value) }))}
                                 />
                                 <div className="syncLegend"><span>Earlier</span><span>Whisper timing</span><span>Later</span></div>
@@ -876,7 +988,7 @@ export default function Home() {
                             <details className="exportDetails">
                               <summary>Technical details</summary>
                               <p>
-                                {Math.round(renderedClip.duration)} sec · {platformLabel(renderedClip.platform)} · {layoutLabel(renderedClip.layout_mode)} · {frameSizeLabel(renderedClip.frame_size)} · {captionLabel(renderedClip.caption_style)} · {renderedClip.word_timed_captions ? "word-synced" : "legacy timing"} · {captionZoneLabel(renderedClip.caption_zone)} · {framingLabel(renderedClip.framing_mode)}
+                                {Math.round(renderedClip.duration)} sec · {renderedClip.auto_profile ? `${renderedClip.auto_profile} · ` : ""}{platformLabel(renderedClip.platform)} · {layoutLabel(renderedClip.layout_mode)} · {frameSizeLabel(renderedClip.frame_size)} · {captionLabel(renderedClip.caption_style)} · {renderedClip.word_timed_captions ? "word-synced" : "legacy timing"} · {captionZoneLabel(renderedClip.caption_zone)} · {framingLabel(renderedClip.framing_mode)}
                               </p>
                             </details>
                           </section>
@@ -892,7 +1004,7 @@ export default function Home() {
                 );
               })}
             </div>
-            <div className="footNote">v16 improves caption phrasing, adds platform-aware safe-zones, and extracts a suggested cover frame for every rendered Short.</div>
+            <div className="footNote">v17 ranks clips across hook, standalone context, payoff, retention and clarity; Auto also makes more scene-aware layout choices.</div>
           </section>
         )}
       </main>
