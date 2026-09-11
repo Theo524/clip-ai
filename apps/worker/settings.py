@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     local_whisper_model: str = "tiny.en"
     local_whisper_device: str = "cpu"
     local_whisper_compute_type: str = "int8"
+    local_whisper_cpu_threads: int = 4
 
     openai_api_key: str = ""
     openai_rank_model: str = "gpt-5.6-luna"

@@ -70,7 +70,7 @@ export default function ProjectsPage() {
           <a className="navLink activeNav" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v20 · beta RC</div>
+          <div className="badge">v20.1 · beta</div>
         </div>
       </nav>
 

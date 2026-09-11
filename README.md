@@ -1,79 +1,62 @@
-# Clip AI v20 Beta Release Candidate
+# Clip AI v20.1 Beta Reliability Patch
 
-Clip AI turns long videos into ranked, reframed, captioned, ready-to-post vertical clips. v20 is the **local beta release candidate**: it freezes the core creative feature set and focuses on making the app understandable and safe for another person to run on a development PC.
+Clip AI turns long English-language videos into ranked, reframed, captioned, ready-to-post vertical clips. v20.1 is a beta reliability/UX patch on top of the v20 local release candidate.
 
-## v20 highlights
+## What changed in v20.1
 
-- **First-run onboarding**: a short welcome flow explains the simplest path — add a video, choose a Best 3 moment, press Create Short.
-- **System preflight**: the new `/status` page checks FFmpeg, FFprobe, transcription, ranking, smart reframing, workspace write access and free disk space.
-- **Local privacy summary**: the status page makes it clear whether transcription/ranking are local or using an external API.
-- **Storage visibility**: shows project count, project storage use and free disk space.
-- **Safe cleanup tool**: removes stale `.part` renders and disposable completed-project audio without deleting source videos, transcripts, finished Shorts or projects.
-- **Beta/version identity**: the UI and worker now report `20.0.0-beta.1` / Beta Release Candidate.
-- **v19.1 stabilized virtual camera retained**: small face movements no longer cause constant micro-pans.
-- All existing features remain: Upload + YouTube project tabs, Best 3 scoring, batch rendering, active-speaker framing, adaptive layouts, word-timed caption presets, smart titles/post copy, projects/history, covers and ready-to-post export.
+### More reliable transcription
+- Keeps the lightweight English-only `tiny.en` default.
+- Checks that a source video actually contains an audio stream before transcription.
+- Local Whisper first uses VAD (speech/silence filtering) for speed.
+- If a chunk returns no transcript, Clip AI automatically retries that chunk **without VAD**. This is useful for quiet film dialogue, music-heavy mixes, or speech VAD mistakenly rejects.
+- If both passes fail, the error now explains that no audible English speech was found instead of only saying “No transcript segments were produced.”
+
+### Faster repeated work + better long-video feedback
+- Adds a local transcript cache keyed from the video content + transcription model/settings. Re-uploading the same source can reuse the transcript instead of running Whisper again.
+- Existing project transcripts are also reused.
+- Videos of 30 minutes or more are processed in up-to-10-minute audio chunks for more useful progress/cancel checkpoints.
+- Progress messages include chunk counts and an ETA estimate after the first chunk finishes.
+- Local Whisper is explicitly tuned to 4 CPU threads by default. Override with `LOCAL_WHISPER_CPU_THREADS` if needed.
+
+> `tiny.en` is already the fastest practical local model in this build. The cache and CPU/progress changes remove wasted work, but a brand-new one-hour video will still take meaningful time on an 8 GB laptop. Cloud transcription is the eventual speed path for production.
+
+### Cleaner home/results experience
+- Homepage headline is now simply **“Turn long videos into ready-to-post Shorts.”**
+- The duplicate System/readiness block was removed from the middle of the home screen. **System remains in the navbar.**
+- Results now put the **Best 3** first with only the information needed to decide: title, score, short “Starts with” preview, Create Short, and an optional “Why this clip?” disclosure.
+- Detailed clip controls, the video-settings guide, saved renders, transcripts/copy controls, and the remaining editing UI are grouped under **More suggestions & editing options**.
+- A rendered Best 3 Short can be previewed/downloaded directly from its compact card.
 
 ## Run locally
 
-Backend:
-
+### Worker
 ```bat
-cd C:\Users\PC\Downloads\clip-ai-starter\apps\worker
+cd /d C:\Users\PC\Downloads\clip-ai-starter\apps\worker
 .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-Frontend:
-
+### Web app
 ```bat
-cd C:\Users\PC\Downloads\clip-ai-starter\apps\web
+cd /d C:\Users\PC\Downloads\clip-ai-starter\apps\web
 npm run dev
 ```
 
-Open:
+Open `http://localhost:3000`.
 
-```text
-http://localhost:3000
-```
-
-System check:
-
-```text
-http://localhost:3000/status
-```
-
-## Recommended local config for the current 8 GB development PC
+## Recommended local transcription settings
 
 ```env
-MOCK_MODE=false
 TRANSCRIPTION_BACKEND=local
-RANKING_BACKEND=local
 LOCAL_WHISPER_MODEL=tiny.en
 LOCAL_WHISPER_DEVICE=cpu
 LOCAL_WHISPER_COMPUTE_TYPE=int8
-CLEANUP_TEMP_AUDIO=true
+LOCAL_WHISPER_CPU_THREADS=4
 ```
 
-`base.en` can improve transcription quality, but `tiny.en` remains the safer low-memory default.
+The project remains English-first by design.
 
-## What “beta release candidate” means
+## Tests
 
-v20 is a complete **local product beta**, not yet a hosted SaaS launch. It intentionally does **not** add cloud accounts, hosted video workers, shared team projects or payments. Those require deployment infrastructure and should be added after this local build has been used on a broader set of real videos.
-
-The core loop is now frozen for beta testing:
-
-```text
-Add video
-→ transcribe
-→ rank moments
-→ choose Best 3 / more suggestions
-→ Auto or custom framing + captions
-→ render
-→ title + post caption + cover
-→ download / reopen from Projects
-```
-
-## Beta smoke test
-
-See `BETA_CHECKLIST.md` before tagging a release or sharing the app with another tester.
+v20.1 ships with **41 passing backend tests**. The current frontend TSX files also pass a TypeScript syntax/transpilation check.

@@ -1,4 +1,4 @@
-# Clip AI v20 beta checklist
+# Clip AI v20.1 beta checklist
 
 Run this before sharing a build with another tester.
 

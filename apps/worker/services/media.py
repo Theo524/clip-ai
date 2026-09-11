@@ -1,5 +1,6 @@
 from concurrent.futures import CancelledError
 from pathlib import Path
+import json
 import os
 import shutil
 import subprocess
@@ -21,6 +22,41 @@ def require_ffmpeg() -> None:
 def _check_cancel(cancel_event: threading.Event | None) -> None:
     if cancel_event is not None and cancel_event.is_set():
         raise CancelledError()
+
+
+def probe_media_audio(media_path: str) -> dict[str, float | bool | str | None]:
+    """Return basic audio/duration metadata using ffprobe for clearer failures and progress."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise RuntimeError("FFprobe was not found. Install FFmpeg and make sure 'ffprobe -version' works in Command Prompt.")
+    source = Path(media_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Media file not found: {source}")
+    command = [
+        ffprobe, "-v", "error",
+        "-show_entries", "format=duration:stream=index,codec_type,codec_name",
+        "-of", "json", str(source),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        detail = (completed.stderr or "FFprobe could not inspect this video.").strip()
+        raise RuntimeError(detail[-2000:])
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("FFprobe returned unreadable media metadata.") from exc
+    streams = payload.get("streams") or []
+    audio_stream = next((item for item in streams if item.get("codec_type") == "audio"), None)
+    duration_raw = (payload.get("format") or {}).get("duration")
+    try:
+        duration = float(duration_raw) if duration_raw is not None else 0.0
+    except (TypeError, ValueError):
+        duration = 0.0
+    return {
+        "has_audio": audio_stream is not None,
+        "audio_codec": audio_stream.get("codec_name") if audio_stream else None,
+        "duration": max(0.0, duration),
+    }
 
 
 def extract_audio_chunks(

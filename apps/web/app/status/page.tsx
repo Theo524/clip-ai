@@ -95,7 +95,7 @@ export default function StatusPage() {
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink activeNav" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v20 · beta RC</div>
+          <div className="badge">v20.1 · beta</div>
         </div>
       </nav>
 
@@ -156,7 +156,7 @@ export default function StatusPage() {
 
             <section className="betaNotice">
               <strong>What “beta” means here</strong>
-              <p>This v20 build is a stable local release candidate: the complete editing pipeline runs on your PC. Accounts, hosted cloud workers, shared projects and payments are deployment features, not requirements for testing the product locally.</p>
+              <p>This v20.1 build is a stable local beta: the complete editing pipeline runs on your PC. Accounts, hosted cloud workers, shared projects and payments are deployment features, not requirements for testing the product locally.</p>
               <code>{data.work_dir}</code>
             </section>
           </>

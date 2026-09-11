@@ -4,7 +4,7 @@ from models import TranscriptSegment, TranscriptWord
 
 
 @lru_cache(maxsize=2)
-def _load_local_model(model_name: str, device: str, compute_type: str):
+def _load_local_model(model_name: str, device: str, compute_type: str, cpu_threads: int = 4):
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
@@ -16,6 +16,8 @@ def _load_local_model(model_name: str, device: str, compute_type: str):
         model_name,
         device=device,
         compute_type=compute_type,
+        cpu_threads=cpu_threads if device == "cpu" else 0,
+        num_workers=1,
     )
 
 
@@ -31,6 +33,8 @@ def transcribe_local_with_timestamps(
     device: str = "cpu",
     compute_type: str = "int8",
     offset_seconds: float = 0.0,
+    vad_filter: bool = True,
+    cpu_threads: int = 4,
 ) -> list[TranscriptSegment]:
     """Transcribe locally with segment + word-level timestamps.
 
@@ -38,11 +42,11 @@ def transcribe_local_with_timestamps(
     rendered captions follow the speech instead of evenly guessing timing across a
     sentence. CPU + int8 remains the safest Windows default for the development PC.
     """
-    model = _load_local_model(model_name, device, compute_type)
+    model = _load_local_model(model_name, device, compute_type, cpu_threads)
     raw_segments, _info = model.transcribe(
         audio_path,
         beam_size=1,
-        vad_filter=True,
+        vad_filter=vad_filter,
         condition_on_previous_text=True,
         word_timestamps=True,
     )

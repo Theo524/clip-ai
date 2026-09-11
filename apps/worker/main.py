@@ -6,6 +6,7 @@ from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 import re
 import shutil
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -15,7 +16,7 @@ from fastapi.responses import FileResponse
 
 from models import AnalyzeRequest, AnalyzeResponse, CleanupResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ProjectDetail, ProjectSummary, RenderClipRequest, RenderClipResponse, SystemCheck, SystemPreflightResponse, TaskCreateResponse, TaskStatusResponse, TranscriptSegment, YouTubeInfoResponse
 from settings import settings
-from services.media import cut_clip, extract_audio_chunks, extract_cover_frame, render_adaptive_short
+from services.media import cut_clip, extract_audio_chunks, extract_cover_frame, probe_media_audio, render_adaptive_short
 from services.captions import write_clip_ass
 from services.mock import mock_clips
 from services.reframe import ReframePlan, load_reframe_plan, plan_smart_reframe, save_reframe_plan
@@ -23,9 +24,10 @@ from services.layouts import auto_profile, choose_caption_style, choose_caption_
 from services.projects import cleanup_stale_work, directory_size, load_project, rendered_media, save_project
 from services.copywriter import dialogue_for_range, generate_clip_copy_local
 from services.tasks import tasks
+from services.transcript_cache import load_cached_transcript, save_cached_transcript, transcript_cache_key
 
-APP_VERSION = "20.0.0-beta.1"
-RELEASE_NAME = "Beta Release Candidate"
+APP_VERSION = "20.1.0-beta.1"
+RELEASE_NAME = "Beta Reliability Patch"
 
 app = FastAPI(title="Clip AI Worker", version=APP_VERSION)
 app.add_middleware(
@@ -116,7 +118,7 @@ def _load_transcript(job_id: str) -> list[TranscriptSegment]:
         raise HTTPException(status_code=500, detail=f"Stored transcript could not be read: {exc}") from exc
 
 
-def _transcribe_chunk(chunk_path: str, offset_seconds: float):
+def _transcribe_chunk(chunk_path: str, offset_seconds: float, *, vad_filter: bool = True):
     backend = settings.transcription_backend.lower().strip()
 
     if backend == "local":
@@ -127,6 +129,8 @@ def _transcribe_chunk(chunk_path: str, offset_seconds: float):
             device=settings.local_whisper_device,
             compute_type=settings.local_whisper_compute_type,
             offset_seconds=offset_seconds,
+            vad_filter=vad_filter,
+            cpu_threads=settings.local_whisper_cpu_threads,
         )
 
     if backend == "openai":
@@ -141,6 +145,25 @@ def _transcribe_chunk(chunk_path: str, offset_seconds: float):
         )
 
     raise RuntimeError("TRANSCRIPTION_BACKEND must be 'local' or 'openai'.")
+
+
+def _transcription_strategy() -> str:
+    backend = settings.transcription_backend.lower().strip()
+    if backend == "local":
+        return f"local:{settings.local_whisper_model}:{settings.local_whisper_compute_type}:word-v20.1"
+    return f"openai:{settings.openai_transcribe_model}:word-v20.1"
+
+
+def _eta_text(seconds: float) -> str:
+    seconds = max(0, int(round(seconds)))
+    if seconds < 60:
+        return f"about {max(1, seconds)} sec remaining"
+    minutes = max(1, round(seconds / 60))
+    if minutes < 60:
+        return f"about {minutes} min remaining"
+    hours = minutes // 60
+    remainder = minutes % 60
+    return f"about {hours} hr {remainder} min remaining" if remainder else f"about {hours} hr remaining"
 
 
 def _rank_segments(segments, max_clips: int):
@@ -191,38 +214,95 @@ def analyze_local_media(
             raise CancelledError()
 
     try:
-        notify(6, "Preparing audio", "Extracting speech audio from the source video…")
         check_cancel()
-        chunks = extract_audio_chunks(
-            media_path,
-            str(audio_dir),
-            chunk_seconds=settings.audio_chunk_seconds,
-            cancel_event=cancel_event,
-        )
+        notify(4, "Checking media", "Checking the video's audio track…")
+        media_info = probe_media_audio(media_path)
+        if not media_info.get("has_audio"):
+            raise RuntimeError("This video has no audio track. Clip AI needs spoken audio to find clip moments.")
 
-        segments = []
-        total_chunks = max(1, len(chunks))
-        for index, chunk_path in enumerate(chunks):
-            check_cancel()
-            pct = 18 + int((index / total_chunks) * 48)
-            notify(pct, "Transcribing", f"Transcribing audio chunk {index + 1} of {total_chunks}…")
-            segments.extend(
-                _transcribe_chunk(
-                    chunk_path,
-                    offset_seconds=index * settings.audio_chunk_seconds,
-                )
+        duration = float(media_info.get("duration") or 0.0)
+        # Ten-minute chunks give long videos more useful progress/cancel checkpoints without
+        # multiplying model loads. Short videos keep the user's configured chunk size.
+        effective_chunk_seconds = settings.audio_chunk_seconds
+        if duration >= 1800:
+            effective_chunk_seconds = min(effective_chunk_seconds, 600)
+
+        transcript_path = job_dir / "transcript.json"
+        cache_root = Path(settings.work_dir) / "cache" / "transcripts"
+        cache_key = transcript_cache_key(media_path, _transcription_strategy())
+        segments: list[TranscriptSegment] = []
+
+        if transcript_path.exists():
+            try:
+                raw = json.loads(transcript_path.read_text(encoding="utf-8"))
+                segments = [TranscriptSegment.model_validate(item) for item in raw]
+            except Exception:
+                segments = []
+            if segments:
+                notify(64, "Using saved transcript", "This project was already transcribed, so Clip AI skipped Whisper.")
+
+        if not segments:
+            cached = load_cached_transcript(cache_root, cache_key)
+            if cached:
+                segments = cached
+                notify(64, "Using transcript cache", "This same video was transcribed before, so Clip AI reused the cached transcript.")
+
+        if not segments:
+            notify(6, "Preparing audio", "Extracting lightweight 16 kHz mono speech audio…")
+            if audio_dir.exists():
+                shutil.rmtree(audio_dir, ignore_errors=True)
+            chunks = extract_audio_chunks(
+                media_path,
+                str(audio_dir),
+                chunk_seconds=effective_chunk_seconds,
+                cancel_event=cancel_event,
             )
+
+            total_chunks = max(1, len(chunks))
+            chunk_times: list[float] = []
+            for index, chunk_path in enumerate(chunks):
+                check_cancel()
+                pct = 18 + int((index / total_chunks) * 46)
+                suffix = ""
+                if chunk_times:
+                    average = sum(chunk_times) / len(chunk_times)
+                    suffix = f" · {_eta_text(average * (total_chunks - index))}"
+                notify(pct, "Transcribing", f"Chunk {index + 1} of {total_chunks}{suffix}")
+                started = time.monotonic()
+                chunk_segments = _transcribe_chunk(
+                    chunk_path,
+                    offset_seconds=index * effective_chunk_seconds,
+                    vad_filter=True,
+                )
+                # VAD is excellent for speed but can reject quiet film dialogue/music-heavy
+                # mixes. An empty chunk gets one automatic full-audio retry.
+                if not chunk_segments and settings.transcription_backend.lower().strip() == "local":
+                    notify(pct, "Retrying quiet audio", f"Chunk {index + 1} looked silent. Retrying without the speech filter…")
+                    check_cancel()
+                    chunk_segments = _transcribe_chunk(
+                        chunk_path,
+                        offset_seconds=index * effective_chunk_seconds,
+                        vad_filter=False,
+                    )
+                chunk_times.append(max(0.01, time.monotonic() - started))
+                segments.extend(chunk_segments)
+                completed_pct = 18 + int(((index + 1) / total_chunks) * 46)
+                if index + 1 < total_chunks:
+                    average = sum(chunk_times) / len(chunk_times)
+                    notify(completed_pct, "Transcribing", f"Finished chunk {index + 1} of {total_chunks} · {_eta_text(average * (total_chunks - index - 1))}")
 
         check_cancel()
         if not segments:
-            raise RuntimeError("No transcript segments were produced.")
+            raise RuntimeError(
+                "No English speech could be transcribed. Clip AI retried without the silence filter; check that the dialogue is audible and not muted or extremely quiet."
+            )
 
-        notify(68, "Saving transcript", "Saving word-level timestamps…")
-        transcript_path = job_dir / "transcript.json"
+        notify(68, "Saving transcript", "Saving word-level timestamps and transcript cache…")
         transcript_path.write_text(
             json.dumps([segment.model_dump() for segment in segments], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        save_cached_transcript(cache_root, cache_key, segments)
 
         check_cancel()
         notify(74, "Finding moments", "Ranking the strongest standalone moments…")

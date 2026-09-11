@@ -1,60 +1,69 @@
-# Clip AI v20 architecture
+# Clip AI v20.1 architecture
 
-v20 keeps the v19.1 media pipeline and adds a thin beta-readiness layer around it.
+v20.1 keeps the v19.1/v20 creative pipeline and adds a reliability/cache layer around transcription plus a simpler default UI.
 
 ```text
-Next.js UI
-  ├─ Create
+Next.js web app
+  ├─ Your video / authorised YouTube project
+  ├─ Best 3 compact results
+  ├─ More suggestions & editing options (collapsed)
+  ├─ task progress / cancel
   ├─ Projects
-  ├─ System / preflight
-  └─ first-run onboarding
+  └─ System
         ↓
-FastAPI worker 20.0.0-beta.1
-  ├─ /system/preflight
-  ├─ /system/cleanup
-  ├─ background analysis tasks
-  ├─ background render tasks
-  ├─ projects/history
-  └─ media serving
+FastAPI worker 20.1.0-beta.1
         ↓
-Local processing
-  FFmpeg / FFprobe
-  → faster-whisper word timestamps
-  → local/OpenAI moment ranking
-  → title/post copy
-  → visual sampling + stabilized speaker tracking
-  → adaptive layout + caption renderer
-  → atomic MP4 render + cover frame
+ffprobe audio check
+        ↓
+fast content fingerprint
+        ├─ project transcript exists → reuse
+        ├─ transcript cache hit → reuse
+        └─ cache miss
+             ↓
+        FFmpeg 16 kHz mono audio extraction
+             ↓
+        long source? up-to-10-min chunks
+             ↓
+        faster-whisper tiny.en, VAD on
+             ↓ empty chunk
+        automatic retry with VAD off
+             ↓
+        word-level transcript
+             ↓
+        persistent transcript cache
+             ↓
+local/OpenAI moment ranking
+        ↓
+copy/title generation
+        ↓
+saved project
+        ↓
+smart reframe + captions + FFmpeg render
 ```
 
-## Preflight model
+## Transcript cache
 
-`GET /system/preflight` checks required dependencies without performing a video analysis. The current checks include:
+Cached transcripts live under:
 
-- FFmpeg and FFprobe on PATH
-- writable work directory
-- configured transcription backend
-- configured ranking backend
-- OpenCV availability for smart reframing
-- free disk space
+```text
+WORK_DIR/cache/transcripts/
+```
 
-The response also reports the app version, project storage use, total/free disk, current Whisper model and a local/external processing privacy summary.
+The cache key uses a fast fingerprint of file size + the first/last 1 MiB plus the transcription strategy/model. It is intentionally a local-development performance cache rather than a security identity primitive.
 
-Only **required** failures mark the worker not ready. Optional visual warnings can degrade gracefully to safer framing.
+## Long-video behavior
 
-## Cleanup model
+Sources at least 30 minutes long are split into at most 10-minute transcription chunks even if `AUDIO_CHUNK_SECONDS` is larger. The model remains loaded in memory, chunks are processed sequentially to stay safe on an 8 GB development PC, and the worker estimates remaining time after it has measured one chunk.
 
-`POST /system/cleanup` uses the existing stale-work cleanup rules. It may remove:
+Parallel transcription is deliberately avoided on the current local build because multiple concurrent decodes would compete for RAM/CPU and can make an 8 GB machine less stable rather than faster.
 
-- interrupted atomic `*.part.*` outputs
-- extracted audio directories for projects that already have a saved transcript
+## Empty-transcript recovery
 
-It does not remove source videos, transcripts, project metadata or successful renders.
-
-## Stabilized virtual camera retained
-
-The v19.1 reframe stabilizer remains the active tracking strategy. Face/active-speaker observations pass through a horizontal dead zone and hysteresis layer. Small detector changes and normal head movement do not move the camera. Reframing is reserved for sustained edge drift, confident speaker changes or meaningful scene changes.
+1. Check that the source has an audio stream with ffprobe.
+2. Transcribe each chunk with VAD enabled.
+3. If a chunk produces zero segments, retry the same chunk with VAD disabled.
+4. Only fail after both attempts produce no English speech.
 
 ## Deployment boundary
 
-The local worker stores project media under `WORK_DIR` and keeps task state in memory. A hosted SaaS deployment should replace those local assumptions with durable object storage, a database, a real job queue, authentication/authorization, quotas and isolated rendering workers. v20 does not pretend those deployment systems exist yet.
+The local worker still stores project media on disk and task state in memory. A hosted release should move source/render media to object storage, projects/users to a database, jobs to a durable queue, and long-video transcription/rendering to scalable cloud workers.

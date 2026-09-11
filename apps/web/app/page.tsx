@@ -569,26 +569,15 @@ export default function Home() {
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
-          <div className="badge">v20 · beta RC</div>
+          <div className="badge">v20.1 · beta</div>
         </div>
       </nav>
 
       <main className="main">
         <section className="hero">
-          <div className="eyebrow">Clip AI beta · local-first video editor</div>
-          <h1>Turn a long video into a Short without learning video editing.</h1>
-          <p className="sub">
-            Upload a video, pick a moment, and press Create Short. Auto handles framing and captions; the detailed controls are there only when you want them.
-          </p>
-          <div className={`betaReadiness ${preflight?.ready ? "ready" : "checking"}`}>
-            <span>{preflight?.ready ? "✓" : "•"}</span>
-            <div>
-              <strong>{preflight?.ready ? "System ready" : preflightError ? "Worker check needed" : "Checking your setup…"}</strong>
-              <small>{preflight?.ready ? `${preflight.local_whisper_model} · ${Math.round(preflight.disk_free_bytes / 1073741824)} GB free` : preflightError || "Verifying FFmpeg, transcription and storage."}</small>
-            </div>
-            <a href="/status">Details</a>
-          </div>
-
+          <div className="eyebrow">Clip AI beta</div>
+          <h1>Turn long videos into ready-to-post Shorts.</h1>
+          <p className="sub">Clip AI finds the best moments, reframes them and adds captions.</p>
           <div className="modeTabs">
             <button className={mode === "upload" ? "tab active" : "tab"} onClick={() => switchMode("upload")}>
               Your video
@@ -709,6 +698,86 @@ export default function Home() {
               <div className="badge">{result.mock ? "Demo analysis" : "Real local transcript"}</div>
             </div>
 
+
+
+            {!result.mock && bestIndices.length > 0 && (
+              <section className="bestPicksPanel">
+                <div className="bestPicksHead">
+                  <div>
+                    <span className="bestEyebrow">AI EDITOR PICKS</span>
+                    <h3>Best 3 moments</h3>
+                    <p>These have the strongest mix of hook, standalone context, payoff and likely retention.</p>
+                  </div>
+                  <button
+                    className="renderAllButton"
+                    type="button"
+                    onClick={renderBestThree}
+                    disabled={rendering !== null || batchRendering !== null}
+                  >
+                    {batchRendering ? `Rendering ${batchRendering.current}/${batchRendering.total}…` : "Render all 3"}
+                  </button>
+                </div>
+                <div className="bestPicksGrid">
+                  {bestIndices.map((index, rank) => {
+                    const clip = result.clips[index];
+                    const breakdown = clip.score_breakdown || {};
+                    const bestRenderedClip = rendered[index]?.kind === "short" ? rendered[index] : null;
+                    const alreadyRendered = Boolean(bestRenderedClip);
+                    return (
+                      <article className="bestPickCard" key={`best-${clip.start}-${index}`}>
+                        <div className="bestPickTop">
+                          <span className="bestRank">#{rank + 1}</span>
+                          <span className={`bestScore ${scoreTone(clip.score)}`}>{clip.score}/100</span>
+                        </div>
+                        <h4>{clip.title}</h4>
+                        <div className="bestStartsWith"><span>Starts with</span><p>“{clip.hook}”</p></div>
+                        <details className="bestWhy">
+                          <summary>Why this clip?</summary>
+                          <p className="editorNote">{clip.editor_note || clip.reasons.slice(0, 2).join(" · ")}</p>
+                          {Object.keys(breakdown).length > 0 && (
+                            <div className="scoreBreakdown">
+                              {Object.entries(breakdown).map(([label, value]) => (
+                                <div className="scoreMetric" key={label}>
+                                  <span>{label}</span>
+                                  <div><i style={{ width: `${Math.max(4, Math.min(100, value))}%` }} /></div>
+                                  <b>{value}</b>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </details>
+                        <div className="bestPickActions">
+                          <span>{fmt(clip.start)} → {fmt(clip.end)}</span>
+                          <button
+                            type="button"
+                            onClick={() => renderMedia(clip, index, "short")}
+                            disabled={rendering !== null || batchRendering !== null}
+                          >
+                            {rendering?.index === index && rendering.kind === "short" ? "Creating…" : alreadyRendered ? "Render again" : "Create Short"}
+                          </button>
+                        </div>
+                        {bestRenderedClip && (
+                          <div className="bestRendered">
+                            <video controls preload="metadata" src={`${workerUrl}${bestRenderedClip.media_url}`} />
+                            <div>
+                              <span>Short ready</span>
+                              <a href={namedDownloadUrl(`${workerUrl}${bestRenderedClip.download_url}`, clip.title)}>Download Short</a>
+                            </div>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
+            <details className="allDetailsPanel">
+              <summary>
+                <span><strong>More suggestions & editing options</strong><small>Customize clips, view saved renders, or learn the video settings.</small></span>
+                <span className="guideChevron">⌄</span>
+              </summary>
+              <div className="allDetailsBody">
             <details className="formatGuide">
               <summary>
                 <span>
@@ -768,64 +837,6 @@ export default function Home() {
                   ))}
                 </div>
               </details>
-            )}
-
-            {!result.mock && bestIndices.length > 0 && (
-              <section className="bestPicksPanel">
-                <div className="bestPicksHead">
-                  <div>
-                    <span className="bestEyebrow">AI EDITOR PICKS</span>
-                    <h3>Best 3 moments</h3>
-                    <p>These have the strongest mix of hook, standalone context, payoff and likely retention.</p>
-                  </div>
-                  <button
-                    className="renderAllButton"
-                    type="button"
-                    onClick={renderBestThree}
-                    disabled={rendering !== null || batchRendering !== null}
-                  >
-                    {batchRendering ? `Rendering ${batchRendering.current}/${batchRendering.total}…` : "Render all 3"}
-                  </button>
-                </div>
-                <div className="bestPicksGrid">
-                  {bestIndices.map((index, rank) => {
-                    const clip = result.clips[index];
-                    const breakdown = clip.score_breakdown || {};
-                    const alreadyRendered = Boolean(rendered[index]?.kind === "short");
-                    return (
-                      <article className="bestPickCard" key={`best-${clip.start}-${index}`}>
-                        <div className="bestPickTop">
-                          <span className="bestRank">#{rank + 1}</span>
-                          <span className={`bestScore ${scoreTone(clip.score)}`}>{clip.score}/100</span>
-                        </div>
-                        <h4>{clip.title}</h4>
-                        <p className="editorNote">{clip.editor_note || clip.reasons.slice(0, 2).join(" · ")}</p>
-                        {Object.keys(breakdown).length > 0 && (
-                          <div className="scoreBreakdown">
-                            {Object.entries(breakdown).map(([label, value]) => (
-                              <div className="scoreMetric" key={label}>
-                                <span>{label}</span>
-                                <div><i style={{ width: `${Math.max(4, Math.min(100, value))}%` }} /></div>
-                                <b>{value}</b>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        <div className="bestPickActions">
-                          <span>{fmt(clip.start)} → {fmt(clip.end)}</span>
-                          <button
-                            type="button"
-                            onClick={() => renderMedia(clip, index, "short")}
-                            disabled={rendering !== null || batchRendering !== null}
-                          >
-                            {rendering?.index === index && rendering.kind === "short" ? "Creating…" : alreadyRendered ? "Render again" : "Create Short"}
-                          </button>
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
             )}
 
             <div className="allSuggestionsHead">
@@ -1129,7 +1140,9 @@ export default function Home() {
                 );
               })}
             </div>
-            <div className="footNote">v18 adds conservative active-speaker framing for multi-person dialogue while falling back to group framing when confidence is weak.</div>
+              </div>
+            </details>
+            <div className="footNote">v20.1 keeps the editor simple by default while preserving advanced controls when you need them.</div>
           </section>
         )}
       </main>
@@ -1140,7 +1153,7 @@ export default function Home() {
             <div className="onboardingTop">
               <span className="onboardingMark">✦</span>
               <div>
-                <span className="onboardingKicker">Clip AI v20 beta</span>
+                <span className="onboardingKicker">Clip AI v20.1 beta</span>
                 <h2 id="welcome-title">You do not need to learn the editor first.</h2>
               </div>
             </div>
