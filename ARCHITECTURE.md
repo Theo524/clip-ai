@@ -1,71 +1,60 @@
-# Clip AI v18.1 architecture
+# Clip AI v20 architecture
+
+v20 keeps the v19.1 media pipeline and adds a thin beta-readiness layer around it.
 
 ```text
-Upload / authorised YouTube project
-            ↓
-FFmpeg audio extraction
-            ↓
-faster-whisper
-(segment + word timestamps + confidence)
-            ↓
-local/OpenAI moment ranking
-            ↓
-Best 3 + editor explanations
-            ↓
-smart title + social caption
-            ↓
-visual sampling
-  faces + groups
-  motion + scene cuts
-            ↓
-lightweight speaker inference
-  transcript says speech is active
-  + lower-face motion > upper-face motion
-  + confidence margin over other faces
-            ↓
-conservative speaker state
-  clear same speaker → follow smoothly
-  uncertain → group center
-  possible switch → require 2 samples
-  camera cut removes old speaker → switch safely
-            ↓
-Auto layout profile
-  stable single face → Fill + Viral
-  group/dialogue → Focus + Cinematic
-  motion/gameplay → Backdrop + Meme
-  portrait → Preserve + Clean
-            ↓
-caption phrase engine
-  punctuation + pause boundaries
-  word-level highlighting
-  platform safe-zones
-            ↓
-FFmpeg 9:16 render + cover frame
-            ↓
-projects/history + ready-to-post panel
+Next.js UI
+  ├─ Create
+  ├─ Projects
+  ├─ System / preflight
+  └─ first-run onboarding
+        ↓
+FastAPI worker 20.0.0-beta.1
+  ├─ /system/preflight
+  ├─ /system/cleanup
+  ├─ background analysis tasks
+  ├─ background render tasks
+  ├─ projects/history
+  └─ media serving
+        ↓
+Local processing
+  FFmpeg / FFprobe
+  → faster-whisper word timestamps
+  → local/OpenAI moment ranking
+  → title/post copy
+  → visual sampling + stabilized speaker tracking
+  → adaptive layout + caption renderer
+  → atomic MP4 render + cover frame
 ```
 
-## Why this is not full speaker diarization
+## Preflight model
 
-The local development machine has 8 GB RAM, so v18 avoids adding a large audiovisual speaker model. Instead it combines information already available in the pipeline: Whisper tells us when speech is occurring, Haar face detection gives candidate faces, and sampled lower-face motion supplies a cheap visual clue.
+`GET /system/preflight` checks required dependencies without performing a video analysis. The current checks include:
 
-This is intentionally conservative. A false positive that aggressively crops to the wrong actor is worse than keeping both actors visible, so weak evidence falls back to the group center.
+- FFmpeg and FFprobe on PATH
+- writable work directory
+- configured transcription backend
+- configured ranking backend
+- OpenCV availability for smart reframing
+- free disk space
 
-## Reframe plan
+The response also reports the app version, project storage use, total/free disk, current Whisper model and a local/external processing privacy summary.
 
-`ReframePlan` now stores:
+Only **required** failures mark the worker not ready. Optional visual warnings can degrade gracefully to safer framing.
 
-- `active_speaker_samples`
-- `active_speaker_switches`
-- `group_fallback_samples`
-- `speaker_hold_samples`
+## Cleanup model
 
-These travel with the cached reframe plan and are exposed in render metadata. Reframe cache filenames are versioned as `reframe_v18_*`, so old v17 plans are not silently reused.
+`POST /system/cleanup` uses the existing stale-work cleanup rules. It may remove:
 
-## FFmpeg tracking-expression safety
+- interrupted atomic `*.part.*` outputs
+- extracted audio directories for projects that already have a saved transcript
 
-Before rendering, dense reframe tracks are simplified with a time-aware curve reduction and capped to a safe number of keyframes. This avoids the FFmpeg nested-expression parser failure seen in v18 on ~45s+ active-speaker clips while retaining endpoints and important direction changes.
+It does not remove source videos, transcripts, project metadata or successful renders.
 
-## Render safety
+## Stabilized virtual camera retained
 
-Speaker movement is still converted into a smoothed crop-center track rather than hard jump cuts. Multi-person Auto layouts continue to preserve more scene context, and the caption safe-zone system remains independent of the speaker tracker.
+The v19.1 reframe stabilizer remains the active tracking strategy. Face/active-speaker observations pass through a horizontal dead zone and hysteresis layer. Small detector changes and normal head movement do not move the camera. Reframing is reserved for sustained edge drift, confident speaker changes or meaningful scene changes.
+
+## Deployment boundary
+
+The local worker stores project media under `WORK_DIR` and keeps task state in memory. A hosted SaaS deployment should replace those local assumptions with durable object storage, a database, a real job queue, authentication/authorization, quotas and isolated rendering workers. v20 does not pretend those deployment systems exist yet.

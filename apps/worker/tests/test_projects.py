@@ -22,3 +22,21 @@ def test_project_round_trip_and_media_listing(tmp_path: Path):
     media = rendered_media(job_dir, "job-123")
     assert {item["kind"] for item in media} == {"short", "original"}
     assert directory_size(job_dir) > 0
+
+
+def test_cleanup_stale_work_removes_only_disposable_files(tmp_path):
+    from services.projects import cleanup_stale_work
+
+    job = tmp_path / "abc"
+    (job / "audio").mkdir(parents=True)
+    (job / "audio" / "audio_000.mp3").write_bytes(b"audio")
+    (job / "transcript.json").write_text("[]", encoding="utf-8")
+    (job / "source.mp4").write_bytes(b"source")
+    (job / ".render.1234.part.mp4").write_bytes(b"partial")
+
+    result = cleanup_stale_work(tmp_path)
+    assert result == {"temp_files": 1, "audio_dirs": 1}
+    assert not (job / "audio").exists()
+    assert not (job / ".render.1234.part.mp4").exists()
+    assert (job / "source.mp4").exists()
+    assert (job / "transcript.json").exists()

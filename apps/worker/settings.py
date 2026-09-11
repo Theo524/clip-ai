@@ -18,6 +18,7 @@ class Settings(BaseSettings):
 
     work_dir: str = "./work"
     audio_chunk_seconds: int = 1200
+    cleanup_temp_audio: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

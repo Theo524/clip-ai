@@ -21,6 +21,46 @@ type AnalyzeResponse = {
   job_id?: string | null;
 };
 
+type TaskStatus = {
+  task_id: string;
+  kind: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  stage: string;
+  progress: number;
+  message?: string | null;
+  job_id?: string | null;
+  result?: unknown;
+  error?: string | null;
+};
+
+type TaskCreate = {
+  task_id: string;
+  job_id?: string | null;
+  status: string;
+};
+
+type SystemCheck = {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+  severity: "required" | "warning" | "info";
+};
+
+type SystemPreflight = {
+  version: string;
+  release: string;
+  ready: boolean;
+  checks: SystemCheck[];
+  transcription_backend: string;
+  ranking_backend: string;
+  local_whisper_model: string;
+  project_count: number;
+  project_storage_bytes: number;
+  disk_free_bytes: number;
+  privacy_note: string;
+};
+
 type YouTubeInfo = {
   source_url: string;
   title: string;
@@ -196,13 +236,60 @@ export default function Home() {
   const [copySaved, setCopySaved] = useState<number | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const [batchRendering, setBatchRendering] = useState<{ current: number; total: number } | null>(null);
+  const [activeTask, setActiveTask] = useState<TaskStatus | null>(null);
+  const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [preflight, setPreflight] = useState<SystemPreflight | null>(null);
+  const [preflightError, setPreflightError] = useState("");
 
   const workerUrl = process.env.NEXT_PUBLIC_WORKER_URL || "http://127.0.0.1:8000";
 
   useEffect(() => {
     const jobId = new URLSearchParams(window.location.search).get("project");
     if (jobId) loadProject(jobId);
+    const seenOnboarding = window.localStorage.getItem("clip-ai-v20-onboarding");
+    if (!seenOnboarding && !jobId) setOnboardingOpen(true);
+    void loadPreflight();
   }, []);
+
+  async function loadPreflight() {
+    setPreflightError("");
+    try {
+      const res = await fetch(`${workerUrl}/system/preflight`, { cache: "no-store" });
+      const data: SystemPreflight & { detail?: string } = await res.json();
+      if (!res.ok) throw new Error(data.detail || "System check failed");
+      setPreflight(data);
+    } catch (err) {
+      setPreflightError(err instanceof Error ? err.message : "Could not reach the worker");
+    }
+  }
+
+  function finishOnboarding() {
+    window.localStorage.setItem("clip-ai-v20-onboarding", "done");
+    setOnboardingOpen(false);
+  }
+
+  async function waitForTask<T>(taskId: string): Promise<T> {
+    while (true) {
+      const res = await fetch(`${workerUrl}/tasks/${encodeURIComponent(taskId)}`, { cache: "no-store" });
+      const task: TaskStatus & { detail?: string } = await res.json();
+      if (!res.ok) throw new Error(task.detail || "Could not read task status");
+      setActiveTask(task);
+      if (task.status === "completed") return task.result as T;
+      if (task.status === "failed") throw new Error(task.error || "Task failed");
+      if (task.status === "cancelled") throw new Error("Task cancelled");
+      await new Promise((resolve) => window.setTimeout(resolve, 550));
+    }
+  }
+
+  async function cancelActiveTask() {
+    if (!activeTask || !["queued", "running"].includes(activeTask.status)) return;
+    try {
+      const res = await fetch(`${workerUrl}/tasks/${encodeURIComponent(activeTask.task_id)}/cancel`, { method: "POST" });
+      if (res.ok) setActiveTask(await res.json());
+    } catch {
+      // The worker may already have finished between the click and this request.
+    }
+  }
 
   async function loadProject(jobId: string) {
     setError("");
@@ -247,9 +334,11 @@ export default function Home() {
       const form = new FormData();
       form.append("file", file);
       form.append("max_clips", "6");
-      const res = await fetch(`${workerUrl}/analyze-upload`, { method: "POST", body: form });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || data.error || "Analysis failed");
+      const res = await fetch(`${workerUrl}/tasks/analyze-upload`, { method: "POST", body: form });
+      const started: TaskCreate & { detail?: string } = await res.json();
+      if (!res.ok) throw new Error(started.detail || "Analysis could not start");
+      setActiveTask({ task_id: started.task_id, kind: "analysis", status: "queued", stage: "Queued", progress: 0, message: "Waiting to start…", job_id: started.job_id });
+      const data = await waitForTask<AnalyzeResponse>(started.task_id);
       setResult(data);
       setOpenedProjectTitle(file.name);
       if (data.job_id) window.history.replaceState({}, "", `/?project=${data.job_id}`);
@@ -257,6 +346,7 @@ export default function Home() {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
+      setActiveTask(null);
     }
   }
 
@@ -306,9 +396,11 @@ export default function Home() {
       form.append("title", youtubeInfo.title);
       if (youtubeInfo.author_name) form.append("author_name", youtubeInfo.author_name);
       if (youtubeInfo.thumbnail_url) form.append("thumbnail_url", youtubeInfo.thumbnail_url);
-      const res = await fetch(`${workerUrl}/analyze-youtube-owned`, { method: "POST", body: form });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || data.error || "YouTube project analysis failed");
+      const res = await fetch(`${workerUrl}/tasks/analyze-youtube-owned`, { method: "POST", body: form });
+      const started: TaskCreate & { detail?: string } = await res.json();
+      if (!res.ok) throw new Error(started.detail || "YouTube project analysis could not start");
+      setActiveTask({ task_id: started.task_id, kind: "analysis", status: "queued", stage: "Queued", progress: 0, message: "Waiting to start…", job_id: started.job_id });
+      const data = await waitForTask<AnalyzeResponse>(started.task_id);
       setResult(data);
       setOpenedProjectTitle(youtubeInfo.title);
       if (data.job_id) window.history.replaceState({}, "", `/?project=${data.job_id}`);
@@ -316,6 +408,7 @@ export default function Home() {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setLoading(false);
+      setActiveTask(null);
     }
   }
 
@@ -410,13 +503,15 @@ export default function Home() {
         body.platform = platforms[index] || "auto";
       }
 
-      const res = await fetch(`${workerUrl}${endpoint}`, {
+      const res = await fetch(`${workerUrl}/tasks${endpoint}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || data.error || "Render failed");
+      const started: TaskCreate & { detail?: string } = await res.json();
+      if (!res.ok) throw new Error(started.detail || "Render could not start");
+      setActiveTask({ task_id: started.task_id, kind: "render", status: "queued", stage: "Queued", progress: 0, message: "Waiting to start…", job_id: started.job_id });
+      const data = await waitForTask<RenderResponse>(started.task_id);
       setRendered((current) => ({ ...current, [index]: data }));
       const projectRes = await fetch(`${workerUrl}/projects/${result.job_id}`);
       if (projectRes.ok) {
@@ -429,6 +524,7 @@ export default function Home() {
       return false;
     } finally {
       setRendering(null);
+      setActiveTask(null);
     }
   }
 
@@ -472,17 +568,26 @@ export default function Home() {
         <a className="brand brandLink" href="/">Clip AI</a>
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
-          <div className="badge">v18 · active-speaker framing</div>
+          <a className="navLink" href="/status">System</a>
+          <div className="badge">v20 · beta RC</div>
         </div>
       </nav>
 
       <main className="main">
         <section className="hero">
-          <div className="eyebrow">Long video → short-form gold</div>
+          <div className="eyebrow">Clip AI beta · local-first video editor</div>
           <h1>Turn a long video into a Short without learning video editing.</h1>
           <p className="sub">
             Upload a video, pick a moment, and press Create Short. Auto handles framing and captions; the detailed controls are there only when you want them.
           </p>
+          <div className={`betaReadiness ${preflight?.ready ? "ready" : "checking"}`}>
+            <span>{preflight?.ready ? "✓" : "•"}</span>
+            <div>
+              <strong>{preflight?.ready ? "System ready" : preflightError ? "Worker check needed" : "Checking your setup…"}</strong>
+              <small>{preflight?.ready ? `${preflight.local_whisper_model} · ${Math.round(preflight.disk_free_bytes / 1073741824)} GB free` : preflightError || "Verifying FFmpeg, transcription and storage."}</small>
+            </div>
+            <a href="/status">Details</a>
+          </div>
 
           <div className="modeTabs">
             <button className={mode === "upload" ? "tab active" : "tab"} onClick={() => switchMode("upload")}>
@@ -576,6 +681,22 @@ export default function Home() {
             </div>
           )}
           {error && <div className="error">{error}</div>}
+          {activeTask && ["queued", "running"].includes(activeTask.status) && (
+            <div className="taskProgress" role="status" aria-live="polite">
+              <div className="taskProgressTop">
+                <div>
+                  <span className="taskKicker">{activeTask.kind === "render" ? "Creating video" : "Analyzing video"}</span>
+                  <strong>{activeTask.stage}</strong>
+                </div>
+                <span className="taskPercent">{activeTask.progress}%</span>
+              </div>
+              <div className="taskBar"><i style={{ width: `${Math.max(2, activeTask.progress)}%` }} /></div>
+              <div className="taskProgressBottom">
+                <p>{activeTask.message || "Working…"}</p>
+                <button type="button" onClick={cancelActiveTask}>Cancel</button>
+              </div>
+            </div>
+          )}
         </section>
 
         {result && (
@@ -1012,6 +1133,38 @@ export default function Home() {
           </section>
         )}
       </main>
+
+      {onboardingOpen && (
+        <div className="onboardingBackdrop" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
+          <div className="onboardingCard">
+            <div className="onboardingTop">
+              <span className="onboardingMark">✦</span>
+              <div>
+                <span className="onboardingKicker">Clip AI v20 beta</span>
+                <h2 id="welcome-title">You do not need to learn the editor first.</h2>
+              </div>
+            </div>
+            <p className="onboardingLead">Start with Auto. Upload a video, let Clip AI pick the strongest moments, then press Create Short. You only open Customize when you want control.</p>
+            <div className="onboardingSteps">
+              <div><b>1</b><span><strong>Add a video</strong><small>Upload your own file or create an authorised YouTube project.</small></span></div>
+              <div><b>2</b><span><strong>Pick a Best 3 moment</strong><small>Clip AI scores the hook, context, payoff, retention and clarity.</small></span></div>
+              <div><b>3</b><span><strong>Create Short</strong><small>Auto handles framing, speaker tracking and captions. Your projects stay saved locally.</small></span></div>
+            </div>
+            <div className="onboardingSystem">
+              <span className={preflight?.ready ? "okDot" : "waitDot"} />
+              <div>
+                <strong>{preflight?.ready ? "This PC is ready to create" : preflightError ? "The worker needs attention" : "Checking this PC…"}</strong>
+                <small>{preflight?.privacy_note || preflightError || "Running the beta preflight check."}</small>
+              </div>
+              <a href="/status">System check</a>
+            </div>
+            <div className="onboardingActions">
+              <button type="button" className="secondaryOnboarding" onClick={finishOnboarding}>Skip tour</button>
+              <button type="button" className="primaryOnboarding" onClick={finishOnboarding}>Start creating</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

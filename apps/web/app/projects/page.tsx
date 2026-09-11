@@ -68,7 +68,9 @@ export default function ProjectsPage() {
         <a className="brand brandLink" href="/">Clip AI</a>
         <div className="navActions">
           <a className="navLink activeNav" href="/projects">Projects</a>
+          <a className="navLink" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
+          <div className="badge">v20 · beta RC</div>
         </div>
       </nav>
 

@@ -1,5 +1,7 @@
 from pathlib import Path
+from concurrent.futures import CancelledError
 import json
+import importlib.util
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 import re
@@ -11,17 +13,21 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from models import AnalyzeRequest, AnalyzeResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ProjectDetail, ProjectSummary, RenderClipRequest, RenderClipResponse, TranscriptSegment, YouTubeInfoResponse
+from models import AnalyzeRequest, AnalyzeResponse, CleanupResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ProjectDetail, ProjectSummary, RenderClipRequest, RenderClipResponse, SystemCheck, SystemPreflightResponse, TaskCreateResponse, TaskStatusResponse, TranscriptSegment, YouTubeInfoResponse
 from settings import settings
 from services.media import cut_clip, extract_audio_chunks, extract_cover_frame, render_adaptive_short
 from services.captions import write_clip_ass
 from services.mock import mock_clips
-from services.reframe import load_reframe_plan, plan_smart_reframe, save_reframe_plan
+from services.reframe import ReframePlan, load_reframe_plan, plan_smart_reframe, save_reframe_plan
 from services.layouts import auto_profile, choose_caption_style, choose_caption_zone, choose_frame_size, choose_layout
-from services.projects import directory_size, load_project, rendered_media, save_project
+from services.projects import cleanup_stale_work, directory_size, load_project, rendered_media, save_project
 from services.copywriter import dialogue_for_range, generate_clip_copy_local
+from services.tasks import tasks
 
-app = FastAPI(title="Clip AI Worker", version="0.17.0")
+APP_VERSION = "20.0.0-beta.1"
+RELEASE_NAME = "Beta Release Candidate"
+
+app = FastAPI(title="Clip AI Worker", version=APP_VERSION)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -33,6 +39,9 @@ app.add_middleware(
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 SAFE_FILENAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+# Clean leftovers from interrupted local runs when the worker starts.
+STARTUP_CLEANUP = cleanup_stale_work(Path(settings.work_dir))
 
 
 def safe_download_name(value: str | None, fallback: str = "clip-ai-short") -> str:
@@ -57,7 +66,7 @@ def fetch_youtube_info(source_url: str) -> YouTubeInfoResponse:
         raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
 
     endpoint = "https://www.youtube.com/oembed?" + urlencode({"url": source_url, "format": "json"})
-    request = Request(endpoint, headers={"User-Agent": "ClipAI/0.17"})
+    request = Request(endpoint, headers={"User-Agent": f"ClipAI/{APP_VERSION}"})
     try:
         with urlopen(request, timeout=10) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -165,20 +174,38 @@ def analyze_local_media(
     source_type: str = "upload",
     author_name: str | None = None,
     thumbnail_url: str | None = None,
+    progress=None,
+    cancel_event=None,
 ) -> AnalyzeResponse:
+    resolved_job_id = job_id or str(uuid.uuid4())
+    job_dir = _job_dir(resolved_job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    audio_dir = job_dir / "audio"
+
+    def notify(value: int, stage: str, message: str) -> None:
+        if progress is not None:
+            progress(value, stage, message)
+
+    def check_cancel() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise CancelledError()
+
     try:
-        resolved_job_id = job_id or str(uuid.uuid4())
-        job_dir = _job_dir(resolved_job_id)
-        job_dir.mkdir(parents=True, exist_ok=True)
-        audio_dir = job_dir / "audio"
+        notify(6, "Preparing audio", "Extracting speech audio from the source video…")
+        check_cancel()
         chunks = extract_audio_chunks(
             media_path,
             str(audio_dir),
             chunk_seconds=settings.audio_chunk_seconds,
+            cancel_event=cancel_event,
         )
 
         segments = []
+        total_chunks = max(1, len(chunks))
         for index, chunk_path in enumerate(chunks):
+            check_cancel()
+            pct = 18 + int((index / total_chunks) * 48)
+            notify(pct, "Transcribing", f"Transcribing audio chunk {index + 1} of {total_chunks}…")
             segments.extend(
                 _transcribe_chunk(
                     chunk_path,
@@ -186,25 +213,34 @@ def analyze_local_media(
                 )
             )
 
+        check_cancel()
         if not segments:
             raise RuntimeError("No transcript segments were produced.")
 
+        notify(68, "Saving transcript", "Saving word-level timestamps…")
         transcript_path = job_dir / "transcript.json"
         transcript_path.write_text(
             json.dumps([segment.model_dump() for segment in segments], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
+        check_cancel()
+        notify(74, "Finding moments", "Ranking the strongest standalone moments…")
         clips = _rank_segments(segments, max_clips=max_clips)
-        # Copy is generated from the exact dialogue inside each selected clip. This keeps
-        # titles useful without inventing facts that were not spoken in the source.
-        for clip in clips:
+
+        notify(84, "Writing titles", "Creating dialogue-based titles and post captions…")
+        for idx, clip in enumerate(clips):
+            check_cancel()
             dialogue = dialogue_for_range(segments, clip.start, clip.end)
             generated = generate_clip_copy_local(dialogue or clip.hook, "auto")
             if settings.ranking_backend.lower().strip() == "local" or not clip.title.strip():
                 clip.title = generated.title
             clip.social_caption = generated.social_caption
+            if clips:
+                notify(84 + int(((idx + 1) / len(clips)) * 8), "Writing titles", f"Polishing clip {idx + 1} of {len(clips)}…")
 
+        check_cancel()
+        notify(94, "Saving project", "Saving the project so it can be reopened later…")
         save_project(
             job_dir,
             {
@@ -217,24 +253,135 @@ def analyze_local_media(
                 "clips": [clip.model_dump() for clip in clips],
             },
         )
+        notify(98, "Cleaning up", "Removing temporary audio files…")
+        if settings.cleanup_temp_audio and audio_dir.exists():
+            shutil.rmtree(audio_dir, ignore_errors=True)
+
         return AnalyzeResponse(
             source_url=source_label,
             mock=False,
             clips=clips,
             job_id=resolved_job_id,
         )
+    except CancelledError:
+        if audio_dir.exists():
+            shutil.rmtree(audio_dir, ignore_errors=True)
+        raise
     except HTTPException:
         raise
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
+        if settings.cleanup_temp_audio and audio_dir.exists():
+            shutil.rmtree(audio_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
+
+
+def _system_preflight() -> SystemPreflightResponse:
+    root = Path(settings.work_dir).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    checks: list[SystemCheck] = []
+
+    def add(check_id: str, label: str, ok: bool, detail: str, severity: str = "required"):
+        checks.append(SystemCheck(id=check_id, label=label, ok=ok, detail=detail, severity=severity))
+
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    add("ffmpeg", "FFmpeg", bool(ffmpeg), ffmpeg or "FFmpeg is not available on PATH.")
+    add("ffprobe", "FFprobe", bool(ffprobe), ffprobe or "FFprobe is not available on PATH.")
+
+    try:
+        probe = root / ".clipai-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        work_ok = True
+        work_detail = f"Writable workspace: {root}"
+    except OSError as exc:
+        work_ok = False
+        work_detail = f"Workspace is not writable: {exc}"
+    add("workspace", "Local workspace", work_ok, work_detail)
+
+    transcribe_backend = settings.transcription_backend.lower().strip()
+    if transcribe_backend == "local":
+        local_stt_ok = importlib.util.find_spec("faster_whisper") is not None
+        add("transcription", "Local transcription", local_stt_ok, f"faster-whisper · {settings.local_whisper_model}" if local_stt_ok else "faster-whisper is not installed.")
+    elif transcribe_backend == "openai":
+        add("transcription", "OpenAI transcription", bool(settings.openai_api_key), "API key configured." if settings.openai_api_key else "OPENAI_API_KEY is missing.")
+    else:
+        add("transcription", "Transcription backend", False, f"Unknown backend: {settings.transcription_backend}")
+
+    ranking_backend = settings.ranking_backend.lower().strip()
+    if ranking_backend == "local":
+        add("ranking", "Local clip ranking", True, "Local moment ranking is enabled.")
+    elif ranking_backend == "openai":
+        add("ranking", "OpenAI clip ranking", bool(settings.openai_api_key), "API key configured." if settings.openai_api_key else "OPENAI_API_KEY is missing.")
+    else:
+        add("ranking", "Ranking backend", False, f"Unknown backend: {settings.ranking_backend}")
+
+    cv2_ok = importlib.util.find_spec("cv2") is not None
+    add("vision", "Smart reframing", cv2_ok, "OpenCV is available." if cv2_ok else "OpenCV is not installed.", "warning")
+
+    usage = shutil.disk_usage(root)
+    free_gb = usage.free / (1024 ** 3)
+    disk_ok = free_gb >= 2.0
+    add("disk", "Free disk space", disk_ok, f"{free_gb:.1f} GB free.", "warning" if disk_ok else "required")
+
+    project_count = 0
+    project_storage = 0
+    if root.exists():
+        for job_dir in root.iterdir():
+            if not job_dir.is_dir() or not (job_dir / "project.json").exists():
+                continue
+            project_count += 1
+            project_storage += directory_size(job_dir)
+
+    required_ok = all(item.ok for item in checks if item.severity == "required")
+    privacy = (
+        "Local transcription and ranking are enabled; source video processing stays on this PC."
+        if transcribe_backend == "local" and ranking_backend == "local"
+        else "One or more AI backends are configured to use an external API."
+    )
+    return SystemPreflightResponse(
+        version=APP_VERSION,
+        release=RELEASE_NAME,
+        ready=required_ok,
+        checks=checks,
+        transcription_backend=settings.transcription_backend,
+        ranking_backend=settings.ranking_backend,
+        local_whisper_model=settings.local_whisper_model,
+        work_dir=str(root),
+        project_count=project_count,
+        project_storage_bytes=project_storage,
+        disk_free_bytes=usage.free,
+        disk_total_bytes=usage.total,
+        privacy_note=privacy,
+    )
+
+
+@app.get("/system/preflight", response_model=SystemPreflightResponse)
+def system_preflight():
+    return _system_preflight()
+
+
+@app.post("/system/cleanup", response_model=CleanupResponse)
+def system_cleanup():
+    root = Path(settings.work_dir).resolve()
+    before = directory_size(root)
+    cleanup = cleanup_stale_work(root)
+    after = directory_size(root)
+    return CleanupResponse(
+        removed_files=int(cleanup.get("temp_files", 0)) + int(cleanup.get("audio_dirs", 0)),
+        removed_bytes=max(0, before - after),
+        startup_cleanup=int(STARTUP_CLEANUP.get("temp_files", 0)) + int(STARTUP_CLEANUP.get("audio_dirs", 0)),
+    )
 
 
 @app.get("/health")
 def health():
     return {
         "ok": True,
+        "version": APP_VERSION,
+        "release": RELEASE_NAME,
         "mock_mode": settings.mock_mode,
         "transcription_backend": settings.transcription_backend,
         "ranking_backend": settings.ranking_backend,
@@ -242,7 +389,27 @@ def health():
         "api_key_configured": bool(settings.openai_api_key),
         "ffmpeg_available": shutil.which("ffmpeg") is not None,
         "word_timestamps": True,
+        "async_tasks": True,
+        "cancellable_ffmpeg": True,
+        "cleanup_temp_audio": settings.cleanup_temp_audio,
+        "startup_cleanup": STARTUP_CLEANUP,
     }
+
+
+@app.get("/tasks/{task_id}", response_model=TaskStatusResponse)
+def task_status(task_id: str):
+    record = tasks.get(task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    return TaskStatusResponse.model_validate(record)
+
+
+@app.post("/tasks/{task_id}/cancel", response_model=TaskStatusResponse)
+def cancel_task(task_id: str):
+    record = tasks.cancel(task_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    return TaskStatusResponse.model_validate(record)
 
 
 @app.get("/youtube-info", response_model=YouTubeInfoResponse)
@@ -323,6 +490,95 @@ def analyze(request: AnalyzeRequest):
         )
 
     return analyze_local_media(request.local_media_path, source_url, request.max_clips)
+
+
+@app.post("/tasks/analyze-upload", response_model=TaskCreateResponse, status_code=202)
+async def start_analyze_upload_task(
+    file: UploadFile = File(...),
+    max_clips: int = Form(default=6),
+):
+    if max_clips < 1 or max_clips > 12:
+        raise HTTPException(status_code=422, detail="max_clips must be between 1 and 12.")
+    if settings.mock_mode:
+        raise HTTPException(status_code=409, detail="Real uploads are disabled while MOCK_MODE=true.")
+    filename = file.filename or "video.mp4"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Upload MP4, MOV, MKV, WEBM, M4V or AVI video files.")
+
+    job_id = str(uuid.uuid4())
+    job_dir = _job_dir(job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    saved_path = job_dir / f"source{suffix}"
+    try:
+        with saved_path.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                output.write(chunk)
+    finally:
+        await file.close()
+
+    def runner(task_id, cancel_event):
+        return analyze_local_media(
+            str(saved_path), filename, max_clips,
+            job_id=job_id, project_title=filename, source_type="upload",
+            progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
+            cancel_event=cancel_event,
+        )
+
+    record = tasks.create("analysis", runner, job_id=job_id)
+    return TaskCreateResponse(task_id=record["task_id"], job_id=job_id, status=record["status"])
+
+
+@app.post("/tasks/analyze-youtube-owned", response_model=TaskCreateResponse, status_code=202)
+async def start_analyze_youtube_task(
+    source_url: str = Form(...),
+    rights_confirmed: bool = Form(...),
+    file: UploadFile = File(...),
+    max_clips: int = Form(default=6),
+    title: str | None = Form(default=None),
+    author_name: str | None = Form(default=None),
+    thumbnail_url: str | None = Form(default=None),
+):
+    if not is_youtube_url(source_url):
+        raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
+    if not rights_confirmed:
+        raise HTTPException(status_code=422, detail="Confirm that you own this video or have permission to process it.")
+    if max_clips < 1 or max_clips > 12:
+        raise HTTPException(status_code=422, detail="max_clips must be between 1 and 12.")
+    if settings.mock_mode:
+        raise HTTPException(status_code=409, detail="Real analysis is disabled while MOCK_MODE=true.")
+
+    filename = file.filename or "video.mp4"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Choose an MP4, MOV, MKV, WEBM, M4V or AVI source file.")
+
+    job_id = str(uuid.uuid4())
+    job_dir = _job_dir(job_id)
+    job_dir.mkdir(parents=True, exist_ok=True)
+    saved_path = job_dir / f"source{suffix}"
+    try:
+        with saved_path.open("wb") as output:
+            while chunk := await file.read(1024 * 1024):
+                output.write(chunk)
+    finally:
+        await file.close()
+    (job_dir / "youtube_source.json").write_text(
+        json.dumps({"source_url": source_url, "source_filename": filename}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    def runner(task_id, cancel_event):
+        return analyze_local_media(
+            str(saved_path), source_url, max_clips,
+            job_id=job_id, project_title=title or filename, source_type="youtube",
+            author_name=author_name, thumbnail_url=thumbnail_url,
+            progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
+            cancel_event=cancel_event,
+        )
+
+    record = tasks.create("analysis", runner, job_id=job_id)
+    return TaskCreateResponse(task_id=record["task_id"], job_id=job_id, status=record["status"])
 
 
 @app.post("/analyze-upload", response_model=AnalyzeResponse)
@@ -484,24 +740,32 @@ def delete_project(job_id: str):
     return {"ok": True, "job_id": job_id}
 
 
-@app.post("/render-clip", response_model=RenderClipResponse)
-def render_clip(request: RenderClipRequest):
+def _render_clip_core(request: RenderClipRequest, *, progress=None, cancel_event=None) -> RenderClipResponse:
     if request.end <= request.start:
         raise HTTPException(status_code=422, detail="Clip end must be greater than clip start.")
+
+    def notify(value: int, stage: str, message: str) -> None:
+        if progress is not None:
+            progress(value, stage, message)
 
     source = _find_source(request.job_id)
     job_dir = _job_dir(request.job_id)
     clips_dir = job_dir / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
-
     start_ms = round(request.start * 1000)
     end_ms = round(request.end * 1000)
     filename = f"clip_{start_ms}_{end_ms}.mp4"
     output = clips_dir / filename
 
     try:
-        if not output.exists() or output.stat().st_size == 0:
-            cut_clip(str(source), str(output), request.start, request.end)
+        if output.exists() and output.stat().st_size > 0:
+            notify(94, "Using cached clip", "This clip was already rendered, so Clip AI reused it.")
+        else:
+            notify(15, "Cutting clip", "Encoding the selected timestamp range…")
+            cut_clip(str(source), str(output), request.start, request.end, cancel_event=cancel_event)
+            notify(92, "Finalizing", "Making the MP4 browser-friendly…")
+    except CancelledError:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Clip render failed: {exc}") from exc
 
@@ -522,10 +786,35 @@ def render_clip(request: RenderClipRequest):
     )
 
 
-@app.post("/render-short", response_model=RenderClipResponse)
-def render_short(request: RenderClipRequest):
+@app.post("/tasks/render-clip", response_model=TaskCreateResponse, status_code=202)
+def start_render_clip_task(request: RenderClipRequest):
+    def runner(task_id, cancel_event):
+        return _render_clip_core(
+            request,
+            progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
+            cancel_event=cancel_event,
+        )
+
+    record = tasks.create("render", runner, job_id=request.job_id)
+    return TaskCreateResponse(task_id=record["task_id"], job_id=request.job_id, status=record["status"])
+
+
+@app.post("/render-clip", response_model=RenderClipResponse)
+def render_clip(request: RenderClipRequest):
+    return _render_clip_core(request)
+
+
+def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_event=None) -> RenderClipResponse:
     if request.end <= request.start:
         raise HTTPException(status_code=422, detail="Clip end must be greater than clip start.")
+
+    def notify(value: int, stage: str, message: str) -> None:
+        if progress is not None:
+            progress(value, stage, message)
+
+    def check_cancel() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise CancelledError()
 
     source = _find_source(request.job_id)
     transcript = _load_transcript(request.job_id)
@@ -535,13 +824,16 @@ def render_short(request: RenderClipRequest):
 
     start_ms = round(request.start * 1000)
     end_ms = round(request.end * 1000)
-    plan_filename = f"reframe_v18_{start_ms}_{end_ms}.json"
+    plan_filename = f"reframe_v19_1_{start_ms}_{end_ms}.json"
     plan_path = clips_dir / plan_filename
 
     try:
+        check_cancel()
         if plan_path.exists():
+            notify(22, "Loading framing", "Reusing the saved speaker-tracking plan…")
             reframe_plan = load_reframe_plan(plan_path)
         else:
+            notify(8, "Scanning the scene", "Finding faces, motion and likely active speakers…")
             speech_intervals = [
                 (segment.start, segment.end)
                 for segment in transcript
@@ -556,6 +848,8 @@ def render_short(request: RenderClipRequest):
                 speech_intervals=speech_intervals,
             )
             save_reframe_plan(reframe_plan, plan_path)
+        check_cancel()
+        notify(34, "Choosing layout", "Resolving Auto framing, video size and caption style…")
 
         layout_mode = choose_layout(request.layout_mode, reframe_plan)
         caption_style = choose_caption_style(request.caption_style, layout_mode, reframe_plan)
@@ -564,11 +858,12 @@ def render_short(request: RenderClipRequest):
         resolved_profile = auto_profile(layout_mode, caption_style, reframe_plan)
 
         offset_tag = f"p{request.caption_offset_ms}" if request.caption_offset_ms >= 0 else f"m{abs(request.caption_offset_ms)}"
-        filename = f"short_v18_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.mp4"
-        subtitle_filename = f"captions_v18_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.ass"
+        filename = f"short_v19_1_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.mp4"
+        subtitle_filename = f"captions_v19_1_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.ass"
         output = clips_dir / filename
         subtitles = clips_dir / subtitle_filename
 
+        notify(43, "Building captions", "Creating word-timed captions inside the video safe-zone…")
         _subtitle_path, word_timed = write_clip_ass(
             transcript,
             request.start,
@@ -583,27 +878,55 @@ def render_short(request: RenderClipRequest):
             caption_zone=caption_zone,
             platform=request.platform,
         )
+        check_cancel()
 
-        if not output.exists() or output.stat().st_size == 0:
-            render_adaptive_short(
-                str(source),
-                str(output),
-                str(subtitles),
-                request.start,
-                request.end,
-                reframe_plan=reframe_plan,
-                layout_mode=layout_mode,
-                frame_size=frame_size,
-                width=720,
-                height=1280,
-            )
+        if output.exists() and output.stat().st_size > 0:
+            notify(89, "Using cached Short", "This exact Short already exists, so Clip AI skipped encoding.")
+        else:
+            notify(55, "Rendering Short", "Encoding the vertical video. This is usually the longest step…")
+            try:
+                render_adaptive_short(
+                    str(source), str(output), str(subtitles), request.start, request.end,
+                    reframe_plan=reframe_plan, layout_mode=layout_mode, frame_size=frame_size,
+                    width=720, height=1280, cancel_event=cancel_event,
+                )
+            except CancelledError:
+                raise
+            except Exception:
+                # Reliability fallback: if a dynamic tracking expression or unusual source
+                # breaks FFmpeg, retry once with a safe centered path instead of failing outright.
+                if reframe_plan.mode == "center":
+                    raise
+                check_cancel()
+                notify(67, "Retrying safely", "The smart crop hit an encoding problem. Retrying with stable center framing…")
+                duration = max(0.05, request.end - request.start)
+                safe_plan = ReframePlan(
+                    mode="center",
+                    keyframes=[(0.0, 0.5), (duration, 0.5)],
+                    source_width=reframe_plan.source_width,
+                    source_height=reframe_plan.source_height,
+                )
+                render_adaptive_short(
+                    str(source), str(output), str(subtitles), request.start, request.end,
+                    reframe_plan=safe_plan, layout_mode=layout_mode, frame_size=frame_size,
+                    width=720, height=1280, cancel_event=cancel_event,
+                )
+                reframe_plan = safe_plan
 
-        cover_filename = f"cover_v18_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{start_ms}_{end_ms}.jpg"
+        check_cancel()
+        cover_filename = f"cover_v19_1_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{start_ms}_{end_ms}.jpg"
         cover_path = clips_dir / cover_filename
         if not cover_path.exists() or cover_path.stat().st_size == 0:
-            # Around one third into the clip usually avoids cold opens while still
-            # reflecting the selected moment. The user can later choose covers manually.
-            extract_cover_frame(str(output), str(cover_path), max(0.15, (request.end - request.start) * 0.34))
+            notify(92, "Creating cover", "Extracting a suggested cover frame…")
+            extract_cover_frame(
+                str(output), str(cover_path), max(0.15, (request.end - request.start) * 0.34),
+                cancel_event=cancel_event,
+            )
+        notify(97, "Saving render", "Adding the finished Short to this project…")
+    except CancelledError:
+        raise
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Short render failed: {exc}") from exc
 
@@ -640,6 +963,24 @@ def render_short(request: RenderClipRequest):
         cover_url=f"/media/{request.job_id}/{cover_filename}",
         auto_profile=resolved_profile,
     )
+
+
+@app.post("/tasks/render-short", response_model=TaskCreateResponse, status_code=202)
+def start_render_short_task(request: RenderClipRequest):
+    def runner(task_id, cancel_event):
+        return _render_short_core(
+            request,
+            progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
+            cancel_event=cancel_event,
+        )
+
+    record = tasks.create("render", runner, job_id=request.job_id)
+    return TaskCreateResponse(task_id=record["task_id"], job_id=request.job_id, status=record["status"])
+
+
+@app.post("/render-short", response_model=RenderClipResponse)
+def render_short(request: RenderClipRequest):
+    return _render_short_core(request)
 
 
 @app.get("/media/{job_id}/{filename}")

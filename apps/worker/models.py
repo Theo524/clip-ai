@@ -132,3 +132,53 @@ class ProjectSummary(BaseModel):
 class ProjectDetail(ProjectSummary):
     clips: list[ClipCandidate] = Field(default_factory=list)
     renders: list[SavedRender] = Field(default_factory=list)
+
+
+class TaskCreateResponse(BaseModel):
+    task_id: str
+    job_id: str | None = None
+    status: str = "queued"
+
+
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    kind: str
+    status: Literal["queued", "running", "completed", "failed", "cancelled"]
+    stage: str
+    progress: int = Field(ge=0, le=100)
+    message: str | None = None
+    job_id: str | None = None
+    result: dict | list | str | int | float | bool | None = None
+    error: str | None = None
+    created_at: str
+    updated_at: str
+
+class SystemCheck(BaseModel):
+    id: str
+    label: str
+    ok: bool
+    detail: str
+    severity: Literal["required", "warning", "info"] = "required"
+
+
+class SystemPreflightResponse(BaseModel):
+    version: str
+    release: str
+    ready: bool
+    checks: list[SystemCheck] = Field(default_factory=list)
+    transcription_backend: str
+    ranking_backend: str
+    local_whisper_model: str
+    work_dir: str
+    project_count: int = 0
+    project_storage_bytes: int = 0
+    disk_free_bytes: int = 0
+    disk_total_bytes: int = 0
+    privacy_note: str
+
+
+class CleanupResponse(BaseModel):
+    removed_files: int = 0
+    removed_bytes: int = 0
+    startup_cleanup: int = 0
+

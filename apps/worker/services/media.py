@@ -1,6 +1,11 @@
+from concurrent.futures import CancelledError
 from pathlib import Path
+import os
 import shutil
 import subprocess
+import threading
+import time
+import uuid
 
 from services.layouts import content_window, normalize_frame_size
 from services.reframe import ReframePlan, build_crop_x_expression
@@ -13,9 +18,21 @@ def require_ffmpeg() -> None:
         )
 
 
-def extract_audio_chunks(media_path: str, output_dir: str, chunk_seconds: int = 1200) -> list[str]:
+def _check_cancel(cancel_event: threading.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise CancelledError()
+
+
+def extract_audio_chunks(
+    media_path: str,
+    output_dir: str,
+    chunk_seconds: int = 1200,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> list[str]:
     """Extract mono 16 kHz MP3 chunks suitable for timestamped transcription."""
     require_ffmpeg()
+    _check_cancel(cancel_event)
 
     source = Path(media_path)
     if not source.exists():
@@ -32,10 +49,7 @@ def extract_audio_chunks(media_path: str, output_dir: str, chunk_seconds: int = 
         "-f", "segment", "-segment_time", str(chunk_seconds),
         "-reset_timestamps", "1", str(pattern),
     ]
-    completed = subprocess.run(command, capture_output=True, text=True)
-    if completed.returncode != 0:
-        detail = (completed.stderr or "FFmpeg failed to extract audio.").strip()
-        raise RuntimeError(detail[-2000:])
+    _run_process(command, "extract audio", cancel_event=cancel_event)
 
     chunks = sorted(str(path) for path in out_dir.glob("audio_*.mp3"))
     if not chunks:
@@ -43,43 +57,42 @@ def extract_audio_chunks(media_path: str, output_dir: str, chunk_seconds: int = 
     return chunks
 
 
-def cut_clip(media_path: str, output_path: str, start: float, end: float) -> str:
+def cut_clip(
+    media_path: str,
+    output_path: str,
+    start: float,
+    end: float,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> str:
     """Render a broadly compatible MP4 for one selected timestamp range."""
     require_ffmpeg()
+    _check_cancel(cancel_event)
 
     source = Path(media_path)
     if not source.exists():
         raise FileNotFoundError(f"Media file not found: {source}")
-
     if start < 0:
         raise ValueError("Clip start must be zero or greater.")
     if end <= start:
         raise ValueError("Clip end must be greater than clip start.")
-
     duration = end - start
     if duration > 180:
         raise ValueError("Development clips are limited to 180 seconds.")
 
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
-
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-ss", f"{start:.3f}",
         "-i", str(source),
         "-t", f"{duration:.3f}",
-        "-map", "0:v:0",
-        "-map", "0:a?",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "22",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-movflags", "+faststart",
-        str(target),
+        "-map", "0:v:0", "-map", "0:a?",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart", str(target),
     ]
-    _run_render(command, target, "render the clip")
+    _run_render(command, target, "render the clip", cancel_event=cancel_event)
     return str(target)
 
 
@@ -95,9 +108,11 @@ def render_adaptive_short(
     frame_size: str = "balanced",
     width: int = 720,
     height: int = 1280,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     """Create a 9:16 MP4 with a subject-aware content window and in-frame captions."""
     require_ffmpeg()
+    _check_cancel(cancel_event)
 
     source = Path(media_path)
     subtitles = Path(subtitle_path)
@@ -131,10 +146,7 @@ def render_adaptive_short(
         win_x, win_y, win_w, win_h = content_window(frame_size, width, height)
         crop_x = build_crop_x_expression(reframe_plan)
         pad_color = "0x08080A"
-
         if layout_mode == "focus":
-            # Large central content window (Balanced = 720x900 / 4:5) on a quiet
-            # dark canvas. This is intentionally NOT a full 16:9 letterbox.
             graph = (
                 "[0:v]setpts=PTS-STARTPTS,"
                 f"scale={win_w}:{win_h}:force_original_aspect_ratio=increase,"
@@ -143,8 +155,6 @@ def render_adaptive_short(
                 f"ass='{ass_name}'[v]"
             )
         else:
-            # Same central crop/window as Focus, with a subdued blurred copy behind it.
-            # Captions are still drawn on the sharp video window, not the blur/margins.
             graph = (
                 "[0:v]setpts=PTS-STARTPTS,split=2[bg][fg];"
                 f"[bg]scale={width}:{height}:force_original_aspect_ratio=increase,"
@@ -167,29 +177,27 @@ def render_adaptive_short(
 
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-ss", f"{start:.3f}",
-        "-i", str(source.resolve()),
-        "-t", f"{duration:.3f}",
-        "-filter_complex", graph,
-        "-map", "[v]",
-        "-map", "0:a?",
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "23",
-        "-pix_fmt", "yuv420p",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-movflags", "+faststart",
-        target.name,
+        "-ss", f"{start:.3f}", "-i", str(source.resolve()),
+        "-t", f"{duration:.3f}", "-filter_complex", graph,
+        "-map", "[v]", "-map", "0:a?",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+        "-movflags", "+faststart", target.name,
     ]
-    _run_render(command, target, f"render the {layout_mode} short", cwd=target.parent)
+    _run_render(command, target, f"render the {layout_mode} short", cwd=target.parent, cancel_event=cancel_event)
     return str(target)
 
 
-
-def extract_cover_frame(media_path: str, output_path: str, at_seconds: float) -> str:
+def extract_cover_frame(
+    media_path: str,
+    output_path: str,
+    at_seconds: float,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> str:
     """Extract a JPEG cover frame from an already-rendered Short."""
     require_ffmpeg()
+    _check_cancel(cancel_event)
     source = Path(media_path)
     if not source.exists():
         raise FileNotFoundError(f"Media file not found: {source}")
@@ -197,20 +205,68 @@ def extract_cover_frame(media_path: str, output_path: str, at_seconds: float) ->
     target.parent.mkdir(parents=True, exist_ok=True)
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-        "-ss", f"{max(0.0, at_seconds):.3f}",
-        "-i", str(source),
-        "-frames:v", "1",
-        "-q:v", "2",
-        str(target),
+        "-ss", f"{max(0.0, at_seconds):.3f}", "-i", str(source),
+        "-frames:v", "1", "-q:v", "2", str(target),
     ]
-    _run_render(command, target, "extract the cover frame")
+    _run_render(command, target, "extract the cover frame", cancel_event=cancel_event)
     return str(target)
 
-def _run_render(command: list[str], target: Path, action: str, cwd: Path | None = None) -> None:
-    completed = subprocess.run(command, capture_output=True, text=True, cwd=str(cwd) if cwd else None)
-    if completed.returncode != 0:
-        detail = (completed.stderr or f"FFmpeg failed to {action}.").strip()
-        raise RuntimeError(detail[-4000:])
 
-    if not target.exists() or target.stat().st_size == 0:
-        raise RuntimeError(f"FFmpeg finished but no output file was produced while trying to {action}.")
+def _run_process(
+    command: list[str],
+    action: str,
+    *,
+    cwd: Path | None = None,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(cwd) if cwd else None,
+    )
+    try:
+        while process.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+                raise CancelledError()
+            time.sleep(0.15)
+        stderr = process.stderr.read() if process.stderr else ""
+        if process.returncode != 0:
+            detail = (stderr or f"FFmpeg failed to {action}.").strip()
+            raise RuntimeError(detail[-4000:])
+    finally:
+        if process.stderr:
+            process.stderr.close()
+
+
+def _run_render(
+    command: list[str],
+    target: Path,
+    action: str,
+    cwd: Path | None = None,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    """Run FFmpeg atomically so failed/cancelled jobs never leave fake finished files."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp_target = target.with_name(f".{target.stem}.{uuid.uuid4().hex[:8]}.part{target.suffix}")
+    safe_command = list(command)
+    safe_command[-1] = str(temp_target.resolve())
+    try:
+        _run_process(safe_command, action, cwd=cwd, cancel_event=cancel_event)
+        if not temp_target.exists() or temp_target.stat().st_size == 0:
+            raise RuntimeError(f"FFmpeg finished but no output file was produced while trying to {action}.")
+        os.replace(temp_target, target)
+    except BaseException:
+        try:
+            temp_target.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise

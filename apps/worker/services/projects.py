@@ -72,3 +72,39 @@ def rendered_media(job_dir: Path, job_id: str) -> list[dict]:
             }
         )
     return items
+
+
+def cleanup_stale_work(root: Path) -> dict[str, int]:
+    """Remove disposable leftovers from interrupted/local processing runs.
+
+    Source videos, transcripts, project metadata and finished renders are preserved.
+    Only atomic `.part` outputs and audio chunk folders that already have a saved
+    transcript are removed.
+    """
+    removed_files = 0
+    removed_audio_dirs = 0
+    if not root.exists():
+        return {"temp_files": 0, "audio_dirs": 0}
+
+    for path in root.rglob("*.part.*"):
+        if path.is_file():
+            try:
+                path.unlink()
+                removed_files += 1
+            except OSError:
+                pass
+
+    for job_dir in root.iterdir():
+        if not job_dir.is_dir():
+            continue
+        audio_dir = job_dir / "audio"
+        transcript = job_dir / "transcript.json"
+        if audio_dir.exists() and transcript.exists():
+            import shutil
+            try:
+                shutil.rmtree(audio_dir)
+                removed_audio_dirs += 1
+            except OSError:
+                pass
+
+    return {"temp_files": removed_files, "audio_dirs": removed_audio_dirs}

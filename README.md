@@ -1,32 +1,24 @@
-# Clip AI v18.1
+# Clip AI v20 Beta Release Candidate
 
-Local-first AI short-form video clipping prototype.
+Clip AI turns long videos into ranked, reframed, captioned, ready-to-post vertical clips. v20 is the **local beta release candidate**: it freezes the core creative feature set and focuses on making the app understandable and safe for another person to run on a development PC.
 
-## v18.1 render hotfix
+## v20 highlights
 
-v18 could generate more than 100 active-speaker tracking keyframes on a longer Short. FFmpeg turns those into nested crop expressions and common builds fail around that depth. v18.1 simplifies the tracking curve before rendering, preserving important bends/speaker switches while keeping the expression below a safe parser depth.
-
-## What v18 changes
-
-v18 is the speaker-framing release:
-
-- Adds **lightweight active-speaker framing** for multi-person dialogue.
-- Uses Whisper speech timing plus sampled lower-face motion as a conservative proxy for who is talking.
-- Requires a clear motion advantage before following a speaker; uncertain samples fall back to **group framing**.
-- Requires repeated evidence before switching between two visible speakers, reducing twitchy left/right jumps.
-- If a camera cut removes the old speaker, the crop can move immediately to a clear new speaker instead of framing empty space.
-- Keeps Focus/group framing as the safety net for films, interviews and multi-person scenes.
-- Reports speaker-switch information in the finished Short's Technical details.
-- Keeps all v17 Best 3, batch rendering, scoring, adaptive captions, projects/history, covers and ready-to-post export features.
-
-This is deliberately a lightweight local approximation rather than full production speaker diarization/lip-reading. It is designed to improve framing without adding a large ML model to an 8 GB development PC.
+- **First-run onboarding**: a short welcome flow explains the simplest path — add a video, choose a Best 3 moment, press Create Short.
+- **System preflight**: the new `/status` page checks FFmpeg, FFprobe, transcription, ranking, smart reframing, workspace write access and free disk space.
+- **Local privacy summary**: the status page makes it clear whether transcription/ranking are local or using an external API.
+- **Storage visibility**: shows project count, project storage use and free disk space.
+- **Safe cleanup tool**: removes stale `.part` renders and disposable completed-project audio without deleting source videos, transcripts, finished Shorts or projects.
+- **Beta/version identity**: the UI and worker now report `20.0.0-beta.1` / Beta Release Candidate.
+- **v19.1 stabilized virtual camera retained**: small face movements no longer cause constant micro-pans.
+- All existing features remain: Upload + YouTube project tabs, Best 3 scoring, batch rendering, active-speaker framing, adaptive layouts, word-timed caption presets, smart titles/post copy, projects/history, covers and ready-to-post export.
 
 ## Run locally
 
 Backend:
 
 ```bat
-cd apps\worker
+cd C:\Users\PC\Downloads\clip-ai-starter\apps\worker
 .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
@@ -35,44 +27,53 @@ uvicorn main:app --reload --port 8000
 Frontend:
 
 ```bat
-cd apps\web
+cd C:\Users\PC\Downloads\clip-ai-starter\apps\web
 npm run dev
 ```
 
-Open `http://localhost:3000`.
+Open:
 
-## How active-speaker framing works
+```text
+http://localhost:3000
+```
 
-During a Short render, Clip AI samples frames across the selected clip. When two or more meaningful faces are visible and the transcript indicates speech is happening, it compares motion in the lower part of each face with motion in the upper face. A clear lower-face motion advantage is treated as evidence that the person may be speaking.
+System check:
 
-The tracker is intentionally conservative:
+```text
+http://localhost:3000/status
+```
 
-1. Clear speaker evidence → bias the crop toward that face.
-2. Uncertain evidence → keep the group safely framed.
-3. Brief detector miss → hold the prior speaker momentarily.
-4. Different visible speaker → require repeated evidence before switching.
-5. Old speaker disappears after a cut → allow an immediate clear replacement.
-
-For multi-person cinematic scenes, Auto still generally prefers **Focus + Cinematic** so the composition is not aggressively destroyed just because one person is speaking. You can manually choose Fill if you want a tighter speaker-centric podcast crop.
-
-## Caption/transcription quality on an 8 GB PC
-
-The safest default remains:
+## Recommended local config for the current 8 GB development PC
 
 ```env
+MOCK_MODE=false
+TRANSCRIPTION_BACKEND=local
+RANKING_BACKEND=local
 LOCAL_WHISPER_MODEL=tiny.en
+LOCAL_WHISPER_DEVICE=cpu
+LOCAL_WHISPER_COMPUTE_TYPE=int8
+CLEANUP_TEMP_AUDIO=true
 ```
 
-If you have enough free RAM, you can test:
+`base.en` can improve transcription quality, but `tiny.en` remains the safer low-memory default.
 
-```env
-LOCAL_WHISPER_MODEL=base.en
+## What “beta release candidate” means
+
+v20 is a complete **local product beta**, not yet a hosted SaaS launch. It intentionally does **not** add cloud accounts, hosted video workers, shared team projects or payments. Those require deployment infrastructure and should be added after this local build has been used on a broader set of real videos.
+
+The core loop is now frozen for beta testing:
+
+```text
+Add video
+→ transcribe
+→ rank moments
+→ choose Best 3 / more suggestions
+→ Auto or custom framing + captions
+→ render
+→ title + post caption + cover
+→ download / reopen from Projects
 ```
 
-`base.en` should improve transcription accuracy, but switch back to `tiny.en` if Windows reports memory-allocation errors.
+## Beta smoke test
 
-## Notes
-
-- Local Shorts render at 720×1280.
-- Auto remains a recommendation system; framing, layout, caption style and size can still be overridden.
-- YouTube projects use the authorised-source-file workflow rather than depending on an unofficial downloader.
+See `BETA_CHECKLIST.md` before tagging a release or sharing the app with another tester.

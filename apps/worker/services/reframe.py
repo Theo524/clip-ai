@@ -336,6 +336,12 @@ def plan_smart_reframe(
     if keyframes[-1][0] < duration:
         keyframes.append((duration, keyframes[-1][1]))
 
+    # v19.1: treat detected subject motion as a *target*, not a command to move the
+    # camera every sample. A generous dead zone keeps the crop locked while a face
+    # naturally shifts, nods, or the detector wobbles. Only sustained/large movement
+    # causes a correction, and the correction moves just enough to restore headroom.
+    keyframes = _stabilize_camera_track(keyframes)
+
     meaningful_speaker = active_speaker_samples >= max(2, math.ceil(successful_samples * 0.06))
     meaningful_face = face_samples >= max(2, math.ceil(successful_samples * 0.12))
     meaningful_motion = motion_samples >= max(2, math.ceil(successful_samples * 0.12))
@@ -368,6 +374,87 @@ def plan_smart_reframe(
         speaker_hold_samples=speaker_hold_samples,
     )
 
+
+
+def _stabilize_camera_track(
+    points: list[tuple[float, float]],
+    *,
+    dead_zone: float = 0.075,
+    settle_zone: float = 0.050,
+    trigger_samples: int = 2,
+    immediate_distance: float = 0.155,
+    min_move: float = 0.018,
+    max_speed_per_second: float = 0.16,
+) -> list[tuple[float, float]]:
+    """Turn a face/speaker target path into a conservative virtual-camera path.
+
+    Face detectors move a few pixels on almost every sample. Following that signal
+    literally makes the crop look like a nervous gimbal. This filter keeps the camera
+    locked while the target remains within a central comfort zone. A movement must be
+    sustained for multiple samples (or be obviously large) before the camera moves.
+    The camera then corrects only enough to bring the target back inside a tighter
+    settle zone, rather than recentering the face on every frame.
+    """
+    if not points:
+        return []
+    ordered = sorted((float(t), float(c)) for t, c in points)
+    if len(ordered) == 1:
+        return ordered
+
+    camera = min(0.90, max(0.10, ordered[0][1]))
+    result: list[tuple[float, float]] = [(ordered[0][0], camera)]
+    outside_count = 0
+
+    for index in range(1, len(ordered)):
+        t, target = ordered[index]
+        target = min(0.90, max(0.10, target))
+        previous_t = result[-1][0]
+        dt = max(0.001, t - previous_t)
+        distance = target - camera
+        abs_distance = abs(distance)
+
+        if abs_distance <= dead_zone:
+            outside_count = 0
+            result.append((t, camera))
+            continue
+
+        outside_count += 1
+        immediate = abs_distance >= immediate_distance
+        if outside_count < max(1, trigger_samples) and not immediate:
+            result.append((t, camera))
+            continue
+
+        direction = 1.0 if distance > 0 else -1.0
+        desired = target - direction * settle_zone
+        desired = min(0.90, max(0.10, desired))
+        requested = desired - camera
+
+        if abs(requested) < min_move:
+            result.append((t, camera))
+            continue
+
+        max_step = max_speed_per_second * dt
+        step = min(max_step, max(-max_step, requested))
+        camera = min(0.90, max(0.10, camera + step))
+        result.append((t, camera))
+
+        # If the subject is now comfortably inside the frame, require fresh evidence
+        # before another correction. This produces deliberate moves separated by holds.
+        if abs(target - camera) <= dead_zone:
+            outside_count = 0
+
+    # Remove redundant hold samples so FFmpeg sees long static sections rather than
+    # dozens of identical keyframes. Keep endpoints and actual camera movements.
+    compact: list[tuple[float, float]] = [result[0]]
+    for index in range(1, len(result) - 1):
+        prev_center = result[index - 1][1]
+        center = result[index][1]
+        next_center = result[index + 1][1]
+        if abs(center - prev_center) > 0.0005 or abs(next_center - center) > 0.0005:
+            compact.append(result[index])
+    if result[-1] != compact[-1]:
+        compact.append(result[-1])
+    return compact
 
 def _speech_active(at_seconds: float, intervals: list[tuple[float, float]] | None) -> bool:
     if not intervals:

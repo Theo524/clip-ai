@@ -90,3 +90,45 @@ def test_reframe_keyframe_compression_keeps_endpoints():
     assert len(compressed) <= 72
     assert compressed[0] == points[0]
     assert compressed[-1] == points[-1]
+
+
+def test_camera_stabilizer_ignores_small_face_wobble():
+    from services.reframe import _stabilize_camera_track
+
+    points = [
+        (0.0, 0.50),
+        (0.5, 0.53),
+        (1.0, 0.47),
+        (1.5, 0.54),
+        (2.0, 0.49),
+        (2.5, 0.52),
+    ]
+    stabilized = _stabilize_camera_track(points)
+
+    assert all(abs(center - 0.50) < 0.001 for _t, center in stabilized)
+
+
+def test_camera_stabilizer_ignores_single_tracking_spike():
+    from services.reframe import _stabilize_camera_track
+
+    points = [(0.0, 0.50), (0.5, 0.50), (1.0, 0.61), (1.5, 0.50), (2.0, 0.50)]
+    stabilized = _stabilize_camera_track(points)
+
+    assert max(abs(center - 0.50) for _t, center in stabilized) < 0.001
+
+
+def test_camera_stabilizer_moves_for_sustained_large_shift():
+    from services.reframe import _stabilize_camera_track
+
+    points = [
+        (0.0, 0.50),
+        (0.5, 0.50),
+        (1.0, 0.66),
+        (1.5, 0.68),
+        (2.0, 0.69),
+        (2.5, 0.70),
+    ]
+    stabilized = _stabilize_camera_track(points)
+
+    assert stabilized[-1][1] > 0.56
+    assert stabilized[-1][1] < 0.70  # corrects without chasing the face dead-centre
