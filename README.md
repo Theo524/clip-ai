@@ -1,83 +1,79 @@
-# Clip AI — Milestone 2
+# Clip AI — Milestone 2.1 (local development mode)
 
-This build adds **real local video analysis**.
+This build removes the API-credit blocker for development.
 
 ## What works
 
-- YouTube URL demo mode (same as Milestone 1)
-- Upload an MP4/MOV/MKV/WEBM/M4V/AVI file
-- FFmpeg extracts audio into podcast-friendly chunks
-- OpenAI timestamped transcription
-- AI ranks the best 20–60 second moments
-- Real timestamps, titles, hooks, scores and reasons appear in the web UI
+- Upload MP4/MOV/MKV/WEBM/M4V/AVI video files you own or are authorised to use
+- FFmpeg extracts audio
+- **faster-whisper runs locally on your PC** and produces timestamped transcript segments
+- A **local heuristic ranker** returns real clip candidates without API credits
+- YouTube URL demo mode remains available
+- OpenAI transcription/ranking code remains available as an optional production upgrade
 
-The upload flow is intended for video you own or are authorised to use.
+## Important first-run behaviour
 
-## Windows setup
+The first real upload downloads the configured Whisper model (`small.en`) to your computer. This can take a little while and uses several hundred MB of disk space. Later runs reuse the cached model.
 
-### A. Check FFmpeg
+The default is CPU + int8, so you do not need CUDA or an NVIDIA GPU.
 
-Open Command Prompt and run:
+## Update an existing Milestone 2 checkout
 
-```bat
-ffmpeg -version
-```
-
-If Windows says it cannot find `ffmpeg`, install FFmpeg first and ensure the command works before continuing.
-
-### B. Worker
+Copy these files over your existing project and replace matching files. Then, in the worker virtual environment:
 
 ```bat
 cd apps\worker
-python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-copy .env.example .env
 ```
 
-Open `apps\worker\.env` and change:
+Open `.env` and use:
 
 ```env
 MOCK_MODE=false
-OPENAI_API_KEY=your_key_here
+TRANSCRIPTION_BACKEND=local
+RANKING_BACKEND=local
+LOCAL_WHISPER_MODEL=small.en
+LOCAL_WHISPER_DEVICE=cpu
+LOCAL_WHISPER_COMPUTE_TYPE=int8
 ```
 
-Do not share your API key in chat or commit it to Git.
+Your existing `OPENAI_API_KEY=...` can stay in `.env`; it will not be used while both backends are set to `local`.
 
-Then start the worker:
+Start the worker:
 
 ```bat
 uvicorn main:app --reload --port 8000
 ```
 
-Optional health check in a browser:
+Health check:
 
 ```text
 http://127.0.0.1:8000/health
 ```
 
-You want `api_key_configured: true` and `ffmpeg_available: true`.
+You want `transcription_backend: "local"`, `ranking_backend: "local"`, and `ffmpeg_available: true`.
 
-### C. Web app
-
-In another Command Prompt:
+Start the web app in another terminal as before:
 
 ```bat
 cd apps\web
 npm install
-copy .env.local.example .env.local
 npm run dev
 ```
 
-Open `http://localhost:3000`, choose **Upload video · real**, select a short test video, and click **Analyze real video**.
+Open `http://localhost:3000`, upload a 2–5 minute talking-head video, and click **Analyze real video**.
 
-Start with a 5–15 minute talking-head video while testing. Long-video chunking is already included, but short files make debugging much faster.
+## Later: higher-quality ranking
+
+Once API billing is enabled, change only:
+
+```env
+RANKING_BACKEND=openai
+```
+
+That keeps local transcription (cheap/free development) while using the hosted model for smarter clip selection.
 
 ## Next milestone
 
-Take one returned timestamp and automatically:
-
-1. cut the original video,
-2. smart-crop it to 9:16,
-3. generate word-level captions,
-4. render a playable MP4.
+Take a selected timestamp and render a real 9:16 MP4 with captions.

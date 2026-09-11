@@ -83,7 +83,7 @@ export default function Home() {
     <div className="shell">
       <nav className="nav">
         <div className="brand">Clip AI</div>
-        <div className="badge">Milestone 2</div>
+        <div className="badge">Milestone 2.1 · local AI</div>
       </nav>
 
       <main className="main">
@@ -91,7 +91,7 @@ export default function Home() {
           <div className="eyebrow">Long video → short-form gold</div>
           <h1>Find the clips worth posting.</h1>
           <p className="sub">
-            Upload a video you own or are authorised to use. AI transcribes it, finds self-contained moments with strong hooks,
+            Upload a video you own or are authorised to use. Local Whisper transcribes it, then the development ranker finds self-contained moments with strong hooks,
             and ranks the best candidates for Shorts, Reels and TikTok.
           </p>
 
@@ -117,9 +117,9 @@ export default function Home() {
                 />
               </label>
               <button className="primary wide" disabled={loading || !file}>
-                {loading ? "Transcribing & finding moments…" : "Analyze real video"}
+                {loading ? "Running local Whisper…" : "Analyze real video"}
               </button>
-              <p className="localNote">For this local MVP, the browser sends the file only to the worker running on your own computer.</p>
+              <p className="localNote">Your upload stays on the local worker. The first run downloads the Whisper model once; after that it is cached on your PC.</p>
             </form>
           ) : (
             <form className="inputCard" onSubmit={submitYoutube}>
@@ -146,7 +146,7 @@ export default function Home() {
                 <h2>Your strongest moments</h2>
                 <p>{result.clips.length} candidates ranked by short-form potential.</p>
               </div>
-              <div className="badge">{result.mock ? "Demo analysis" : "Real transcript"}</div>
+              <div className="badge">{result.mock ? "Demo analysis" : "Real local transcript"}</div>
             </div>
 
             <div className="clipGrid">
