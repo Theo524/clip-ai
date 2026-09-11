@@ -104,3 +104,64 @@ h1 { font-size: clamp(44px, 7vw, 76px); line-height: .98; letter-spacing: -.055e
 .renderMeta { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:9px; color:var(--muted); font-size:12px; }
 .downloadLink { color:#c4b5fd; text-decoration:none; font-weight:800; }
 .downloadLink:hover { text-decoration:underline; }
+
+/* Milestone 4 */
+.renderActions { display:grid; grid-template-columns: 1fr; gap:8px; margin-top:18px; }
+.renderActions .renderButton { margin-top:0; }
+.shortButton {
+  border-color:#6d28d9;
+  background:linear-gradient(135deg, #7c3aed, #5b21b6);
+  color:white;
+}
+.secondaryButton { background:#121216; }
+.verticalWrap { text-align:center; }
+.clipVideo.verticalVideo {
+  aspect-ratio:9 / 16;
+  width:min(100%, 300px);
+  max-height:540px;
+  object-fit:contain;
+  margin:0 auto;
+}
+.verticalWrap .renderMeta { text-align:left; }
+
+/* Milestone 6 */
+.renderOptions {
+  display:grid;
+  grid-template-columns:repeat(3, minmax(0,1fr));
+  gap:9px;
+  margin-top:18px;
+}
+.renderOptions label {
+  display:flex;
+  flex-direction:column;
+  gap:7px;
+  color:var(--muted);
+  font-size:11px;
+  font-weight:750;
+  text-align:left;
+}
+.renderOptions select {
+  width:100%;
+  min-width:0;
+  background:#0d0d10;
+  color:#f4f4f5;
+  border:1px solid #34343a;
+  border-radius:10px;
+  padding:10px 11px;
+  outline:none;
+  font:inherit;
+  font-size:12px;
+}
+.renderOptions select:focus { border-color:#7c3aed; }
+.optionHint {
+  margin:9px 0 0;
+  color:#71717a;
+  font-size:11px;
+  line-height:1.45;
+}
+@media (min-width: 781px) {
+  .clipGrid { grid-template-columns:repeat(2, minmax(0,1fr)); }
+}
+@media (max-width: 700px) {
+  .renderOptions { grid-template-columns:1fr; }
+}

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 from urllib.parse import urlparse
 import re
 import shutil
@@ -8,12 +9,15 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from models import AnalyzeRequest, AnalyzeResponse, RenderClipRequest, RenderClipResponse
+from models import AnalyzeRequest, AnalyzeResponse, RenderClipRequest, RenderClipResponse, TranscriptSegment
 from settings import settings
-from services.media import cut_clip, extract_audio_chunks
+from services.media import cut_clip, extract_audio_chunks, render_adaptive_short
+from services.captions import write_clip_ass
 from services.mock import mock_clips
+from services.reframe import load_reframe_plan, plan_smart_reframe, save_reframe_plan
+from services.layouts import choose_caption_style, choose_layout, normalize_frame_size
 
-app = FastAPI(title="Clip AI Worker", version="0.3.0")
+app = FastAPI(title="Clip AI Worker", version="0.7.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -47,6 +51,20 @@ def _find_source(job_id: str) -> Path:
     if not sources:
         raise HTTPException(status_code=404, detail="Original source video was not found for this job.")
     return sources[0]
+
+
+def _load_transcript(job_id: str) -> list[TranscriptSegment]:
+    transcript_path = _job_dir(job_id) / "transcript.json"
+    if not transcript_path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail="This job predates caption storage. Re-analyze the video once, then generate the Short.",
+        )
+    try:
+        raw = json.loads(transcript_path.read_text(encoding="utf-8"))
+        return [TranscriptSegment.model_validate(item) for item in raw]
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Stored transcript could not be read: {exc}") from exc
 
 
 def _transcribe_chunk(chunk_path: str, offset_seconds: float):
@@ -126,6 +144,12 @@ def analyze_local_media(
 
         if not segments:
             raise RuntimeError("No transcript segments were produced.")
+
+        transcript_path = job_dir / "transcript.json"
+        transcript_path.write_text(
+            json.dumps([segment.model_dump() for segment in segments], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
         clips = _rank_segments(segments, max_clips=max_clips)
         return AnalyzeResponse(
@@ -245,6 +269,95 @@ def render_clip(request: RenderClipRequest):
         duration=round(request.end - request.start, 3),
         media_url=media_url,
         download_url=f"{media_url}?download=true",
+        kind="original",
+    )
+
+
+@app.post("/render-short", response_model=RenderClipResponse)
+def render_short(request: RenderClipRequest):
+    if request.end <= request.start:
+        raise HTTPException(status_code=422, detail="Clip end must be greater than clip start.")
+
+    source = _find_source(request.job_id)
+    transcript = _load_transcript(request.job_id)
+    job_dir = _job_dir(request.job_id)
+    clips_dir = job_dir / "clips"
+    clips_dir.mkdir(parents=True, exist_ok=True)
+
+    start_ms = round(request.start * 1000)
+    end_ms = round(request.end * 1000)
+    plan_filename = f"reframe_{start_ms}_{end_ms}.json"
+    plan_path = clips_dir / plan_filename
+
+    try:
+        if plan_path.exists():
+            reframe_plan = load_reframe_plan(plan_path)
+        else:
+            reframe_plan = plan_smart_reframe(
+                str(source),
+                request.start,
+                request.end,
+                target_width=720,
+                target_height=1280,
+            )
+            save_reframe_plan(reframe_plan, plan_path)
+
+        layout_mode = choose_layout(request.layout_mode, reframe_plan)
+        caption_style = choose_caption_style(request.caption_style, layout_mode, reframe_plan)
+        frame_size = normalize_frame_size(request.frame_size)
+
+        filename = f"short_{layout_mode}_{frame_size}_{caption_style}_{start_ms}_{end_ms}.mp4"
+        subtitle_filename = f"captions_{layout_mode}_{frame_size}_{caption_style}_{start_ms}_{end_ms}.ass"
+        output = clips_dir / filename
+        subtitles = clips_dir / subtitle_filename
+
+        write_clip_ass(
+            transcript,
+            request.start,
+            request.end,
+            str(subtitles),
+            caption_style=caption_style,
+            layout_mode=layout_mode,
+            frame_size=frame_size,
+            width=720,
+            height=1280,
+        )
+
+        if not output.exists() or output.stat().st_size == 0:
+            render_adaptive_short(
+                str(source),
+                str(output),
+                str(subtitles),
+                request.start,
+                request.end,
+                reframe_plan=reframe_plan,
+                layout_mode=layout_mode,
+                frame_size=frame_size,
+                width=720,
+                height=1280,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Short render failed: {exc}") from exc
+
+    media_url = f"/media/{request.job_id}/{filename}"
+    return RenderClipResponse(
+        job_id=request.job_id,
+        filename=filename,
+        start=round(request.start, 3),
+        end=round(request.end, 3),
+        duration=round(request.end - request.start, 3),
+        media_url=media_url,
+        download_url=f"{media_url}?download=true",
+        kind="short",
+        width=720,
+        height=1280,
+        framing_mode=reframe_plan.mode,
+        layout_mode=layout_mode,
+        caption_style=caption_style,
+        frame_size=frame_size,
+        tracking_samples=reframe_plan.sample_count,
+        face_samples=reframe_plan.face_samples,
+        motion_samples=reframe_plan.motion_samples,
     )
 
 

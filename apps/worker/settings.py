@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     transcription_backend: str = "local"  # local | openai
     ranking_backend: str = "local"  # local | openai
 
-    local_whisper_model: str = "small.en"
+    local_whisper_model: str = "tiny.en"
     local_whisper_device: str = "cpu"
     local_whisper_compute_type: str = "int8"
 

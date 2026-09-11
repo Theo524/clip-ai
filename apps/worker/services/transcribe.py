@@ -21,7 +21,7 @@ def _load_local_model(model_name: str, device: str, compute_type: str):
 
 def transcribe_local_with_timestamps(
     audio_path: str,
-    model_name: str = "small.en",
+    model_name: str = "tiny.en",
     device: str = "cpu",
     compute_type: str = "int8",
     offset_seconds: float = 0.0,
@@ -34,7 +34,7 @@ def transcribe_local_with_timestamps(
     model = _load_local_model(model_name, device, compute_type)
     raw_segments, _info = model.transcribe(
         audio_path,
-        beam_size=5,
+        beam_size=1,
         vad_filter=True,
         condition_on_previous_text=True,
     )

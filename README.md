@@ -1,17 +1,29 @@
-# Clip AI — Milestone 3
+# Clip AI — Milestone 7
 
-A local-first prototype for turning long-form video into ranked short-form candidates and rendering chosen moments into real MP4 clips.
+Local-first prototype for turning long videos into short-form clips.
 
-## What works now
+## What changed in Milestone 7
 
-- Upload an authorised local video.
-- FFmpeg extracts audio.
-- Local `faster-whisper` produces timestamped transcript segments.
-- A zero-cost local development ranker proposes candidate moments.
-- Each real candidate has a **Generate MP4** button.
-- FFmpeg makes a frame-accurate H.264/AAC MP4 from the original source.
-- The generated clip plays in the browser and can be downloaded.
-- YouTube URL mode remains a demo; direct arbitrary YouTube downloading is intentionally not wired in.
+The renderer now treats the **9:16 canvas** and the **actual video picture** as two different things.
+
+- **Fill** — full 9:16 subject-aware crop for talking heads.
+- **Focus** — large central portrait-friendly crop on a plain dark canvas; ideal for movies/dialogue/scenic footage.
+- **Backdrop** — the same central crop with a subdued blurred background.
+- **Preserve** — keeps already-vertical footage intact.
+- Removed the old full-16:9-inside-9:16 Cinema/fit approach.
+- Focus/Backdrop have Compact, Balanced and Immersive frame-size presets.
+- Captions are always rendered **inside the actual video picture**, never in the empty/blurred margins.
+- Multi-face samples use group-aware horizontal framing.
+
+## Recommended movie setup
+
+```text
+Framing: Focus
+Frame size: Balanced
+Captions: Cinematic
+```
+
+Balanced creates a 720×900 (4:5) video window centered within the 720×1280 Short. The surrounding area is plain dark and intentionally quiet. Cinematic captions sit on the lower portion of the picture itself.
 
 ## Run the worker
 
@@ -22,42 +34,13 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-Health check:
-
-`http://127.0.0.1:8000/health`
-
-For an 8 GB Windows development machine, these `.env` values are a good starting point:
-
-```env
-MOCK_MODE=false
-TRANSCRIPTION_BACKEND=local
-RANKING_BACKEND=local
-LOCAL_WHISPER_MODEL=tiny.en
-LOCAL_WHISPER_DEVICE=cpu
-LOCAL_WHISPER_COMPUTE_TYPE=int8
-```
-
 ## Run the web app
 
 ```bat
 cd apps\web
-npm install
-copy .env.local.example .env.local
 npm run dev
 ```
 
 Open `http://localhost:3000`.
 
-## Local files
-
-Real uploads and generated clips are stored under `apps/worker/work/<job-id>/` while you develop. The `work/` directory is ignored by Git.
-
-## Next milestone
-
-Take a generated cut and create a true short-form composition:
-
-1. 9:16 vertical canvas
-2. smart crop/reframe
-3. burned/animated captions
-4. optional title/hook layer
-5. speaker/face tracking
+Your real `.env` remains gitignored and should never be committed.
