@@ -204,7 +204,7 @@ export default function Home() {
     <div className="shell">
       <nav className="nav">
         <div className="brand">Clip AI</div>
-        <div className="badge">Milestone 9 · stable viral captions</div>
+        <div className="badge">Milestone 10 · better moment detection</div>
       </nav>
 
       <main className="main">
@@ -398,7 +398,7 @@ export default function Home() {
                 );
               })}
             </div>
-            <div className="footNote">Milestone 9 forces a fresh reframe/render cache for Shorts, so the stable-caption and caption-safe placement changes show up even on an existing analysed job.</div>
+            <div className="footNote">Milestone 10 improves local moment selection: cleaner openings, tighter endings, payoff-aware trimming, and stronger duplicate suppression. Re-analyse a video to use the new selector; rendering and caption behaviour remain unchanged.</div>
           </section>
         )}
       </main>

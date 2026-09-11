@@ -1,4 +1,4 @@
-# Clip AI Architecture — Milestone 9
+# Clip AI Architecture — Milestone 10
 
 ## Pipeline
 
@@ -13,11 +13,20 @@ faster-whisper
   ↓
 transcript.json
   ↓
-clip ranking
+M10 moment selector
+  ├─ candidate window generation
+  ├─ opening / hook scoring
+  ├─ completeness + payoff scoring
+  ├─ clean-boundary scoring
+  ├─ filler / repetition penalties
+  ├─ payoff-tail trimming preference
+  └─ overlap / semantic-near-duplicate suppression
+  ↓
+ranked clip candidates
   ↓
 selected clip
   ├─ lightweight visual sampling
-  │    ├─ horizontal subject reframe plan
+  │    ├─ horizontal subject/group reframe plan
   │    └─ coarse vertical face occupancy
   └─ word timings
        ↓
@@ -32,68 +41,74 @@ ASS caption track
 FFmpeg adaptive 720×1280 render
 ```
 
-## Stable Viral / Meme captions
+## Candidate generation
 
-Milestone 8 redrew a complete highlighted phrase for every active-word interval. Even with correct word timing, that meant phrase-level animation state restarted whenever the active word changed.
+The local selector evaluates transcript windows of roughly **18–65 seconds**. It does not simply split the transcript into fixed intervals.
 
-Milestone 9 separates the caption into two layers:
+Candidate starts and ends are based on Whisper transcript segments, with preference for:
 
-```text
-Layer 0: persistent base phrase
-Layer 1: active word only
-```
+- complete sentence endings
+- speech pauses between segments
+- clean standalone openings
+- 24–48 second finished ideas
 
-For a four-word phrase, the ASS track contains one Layer 0 event spanning the whole phrase plus four short Layer 1 events. Non-active words in Layer 1 are transparent but remain in the text layout. This keeps the accent word registered over the persistent phrase.
+A tiny pre/post-roll is added to the chosen timestamp so the final MP4 does not clip a phoneme at an exact speech boundary.
 
-The active word uses colour/outline emphasis and a tiny vertical `move()` animation. It deliberately avoids scale-based reflow, so the phrase does not shift horizontally as different words become active.
+## Selection score
 
-## Phrase transitions
+The local score combines several signals:
 
-Phrase-level fades are still allowed, but only once at phrase entry/exit. Active-word overlay events do not use `fad()`.
+### Opening quality
 
-## Caption-safe placement
+Strong positive signals:
 
-The smart reframe pass already samples frames for faces. Milestone 9 reuses those samples to count the dominant important-face position in three coarse bands:
+- direct hook language
+- a question-led opener
+- concrete numbers/details
+- a clean standalone first thought
 
-```text
-upper
-middle
-lower
-```
+Negative signals:
 
-`choose_caption_zone()` combines those occupancy counts with style preferences:
+- context-dependent starts such as “and…”, “but…”, “because…”, “then…”
+- pronoun-heavy starts that obviously rely on unseen context
 
-- Cinematic: lower → middle → upper
-- Viral / Meme: middle → lower → upper
-- Clean: lower → middle → upper
+### Narrative / idea completeness
 
-A small preference penalty means captions only move away from their natural band when another band is meaningfully less occupied by faces.
+The selector rewards:
 
-This stays lightweight enough for the 8 GB development machine because it does not add another visual-analysis pass.
+- contrast/pivot language
+- a takeaway, reveal, lesson or conclusion
+- endings that actually land on that payoff
 
-## In-picture coordinates
+If a payoff has already landed and the candidate continues into unrelated or low-value chatter, the longer version receives a substantial penalty so the tighter edit wins.
 
-Caption zones are always resolved relative to the actual picture region.
+### Speech quality
 
-For Focus / Backdrop, the caption Y coordinate is calculated inside the central content window, not across the full 9:16 canvas. Therefore Cinematic captions never drift into the dark/blurred margins.
+Additional signals include:
 
-Default zone ratios within the picture are approximately:
+- useful speaking density
+- enough substance for a standalone Short
+- low filler density
+- lower repetition
+- specific/high-interest language
 
-```text
-upper   34%
-middle  62%
-lower   85%
-```
+## Deduplication
 
-## Cache versioning
+Candidates are sorted by quality and tighter duration. A candidate is rejected if it heavily overlaps a stronger selected moment or if its opening is nearly identical to an already selected candidate.
 
-Milestone 9 uses `reframe_v9_*`, `captions_v9_*`, and `short_v9_*` filenames. This intentionally prevents a Milestone 8 cached Short from hiding the new caption behaviour after an upgrade.
+This reduces the common failure mode where the top five “clips” are just slightly shifted versions of one good 40-second section.
 
-## Existing layout system
+## OpenAI ranking path
 
-- Fill — full 9:16 smart crop.
-- Focus — large central portrait-friendly crop on a quiet dark canvas.
-- Backdrop — Focus crop with a blurred canvas.
-- Preserve — already-vertical source.
+`services/rank.py` remains the optional hosted selector. Its prompt now mirrors Milestone 10's editorial rules: choose the tightest complete version, avoid mid-thought boundaries, stop after the payoff, and value standalone context as highly as excitement.
 
-All caption styles remain inside the actual picture area.
+## Rendering system
+
+Milestone 9 rendering remains unchanged:
+
+- **Fill** — full 9:16 smart crop.
+- **Focus** — large central portrait-friendly crop on a quiet dark canvas.
+- **Backdrop** — Focus crop with a blurred canvas.
+- **Preserve** — already-vertical source.
+
+Captions remain inside the actual picture area, with word-level timing and stable active-word emphasis for Viral/Meme presets.

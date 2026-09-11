@@ -45,17 +45,22 @@ You are the clip-selection engine for a short-form video product.
 Choose up to {max_clips} moments from the timestamped transcript below.
 
 A strong candidate:
-- starts with a hook or can begin cleanly without missing context
-- contains a complete idea/story/payoff
-- is usually 20-60 seconds long
+- starts on a clean sentence/thought boundary, ideally with a hook
+- does NOT begin with context-dependent fragments such as "and...", "but...", "because..." unless that wording is clearly an intentional hook
+- contains a complete idea, mini-story, argument, reveal, joke, or takeaway
+- ends on the payoff/conclusion rather than continuing into unrelated chatter
+- is usually 20-60 seconds long, with roughly 25-50 seconds preferred when the idea is complete
 - is surprising, useful, emotional, funny, contrarian, specific, or highly shareable
-- does not rely heavily on content outside the selected interval
+- makes sense to a viewer who has not seen the surrounding video
 
-Rules:
+Editing rules:
+- choose the tightest complete version of a moment; trim setup that is not needed
+- do not cut off the first or last thought mid-sentence
+- if a payoff lands, do not keep extra filler after it merely to make the clip longer
 - start/end must align reasonably with the supplied timestamps
 - do not invent dialogue
-- avoid overlapping candidates unless both are unusually strong
-- score 0-100 for short-form potential
+- avoid overlapping or near-duplicate candidates unless both are unusually strong
+- score 0-100 for short-form potential; boundary cleanliness and completeness matter as much as excitement
 - sort best first
 - hook should quote or closely paraphrase the opening idea, not fabricate a sensational claim
 

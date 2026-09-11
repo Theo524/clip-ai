@@ -1,75 +1,68 @@
-# Clip AI — Milestone 9
+# Clip AI — Milestone 10
 
 Local-first prototype for turning long videos into short-form clips.
 
-## What changed in Milestone 9
+## What changed in Milestone 10
 
-This milestone fixes the Viral Pop / Meme caption flicker and adds lightweight **caption-safe placement**.
+This milestone improves **which moments get selected**, rather than adding another visual effect.
 
-- **Stable phrase layer:** Viral Pop and Meme keep the full phrase continuously visible for the phrase lifetime.
-- **Active-word overlay:** only the currently spoken word is drawn again in the accent colour.
-- **No whole-caption re-entry between words:** word changes no longer restart the phrase fade/animation.
-- **Small active-word jump:** the accent word rises a few pixels into place without moving the base phrase or changing its width.
-- **Phrase transitions still exist:** the whole phrase can fade in/out only when the phrase itself changes.
-- **Caption-safe zones:** the existing face-sampling pass now records whether important faces tend to occupy the upper, middle, or lower part of the picture.
-- Auto placement chooses an in-picture **upper / middle / lower** caption band that better avoids the dominant face region.
-- **Cinematic** still naturally prefers the lower part of the actual video picture; **Viral Pop / Meme** naturally prefer the middle unless that area is face-heavy.
-- Captions remain inside the actual video window for Fill, Focus, Backdrop and Preserve.
-- Milestone 8 word-level Whisper timing and the Caption sync slider remain intact.
+The local zero-credit selector now prioritises:
 
-## What the stable Viral Pop rendering does
+- **Clean openings** — strongly penalises clips that begin as context-dependent fragments such as “and…”, “but…”, or “because…” unless the line is clearly an intentional hook.
+- **Hooks** — rewards question-led openings, strong hook language, specific numbers and direct claims.
+- **Complete ideas** — looks for a turn/pivot and a payoff or takeaway, not merely exciting vocabulary.
+- **Tighter endings** — rewards clips that end on the conclusion and penalises extra chatter after the payoff.
+- **Natural boundaries** — pauses and complete sentence endings help the candidate score.
+- **Better Shorts length** — roughly 24–48 seconds is preferred when the idea is complete; 18–60 seconds remains valid.
+- **Standalone context** — clips should make sense to someone who has not watched the surrounding video.
+- **Duplicate suppression** — heavily overlapping and near-identical moments are filtered more aggressively.
+- **Tiny edit padding** — selected timestamps include a small pre/post-roll so generated MP4s are less likely to cut the first or last phoneme.
 
-```text
-PHRASE LIFETIME
-"this really works now"  ← one stable base event
+The OpenAI ranking prompt has also been updated with the same editing rules for when `RANKING_BACKEND=openai` is enabled later.
 
-WORD 1
-THIS really works now     ← active overlay only
+## What did not change
 
-WORD 2
-this REALLY works now     ← base phrase never disappears
+Milestone 9's visual system remains intact:
 
-WORD 3
-this really WORKS now
-```
-
-The active overlay uses transparent placeholders for the other words, so the highlighted word stays aligned with the stable phrase. Its tiny upward movement gives a pop effect without horizontal jitter.
-
-## Caption placement
-
-The smart reframe pass now records coarse face occupancy:
-
-```text
-upper / middle / lower
-```
-
-Auto caption placement reuses that data instead of running another heavy detector. If there is no reliable face evidence, presets keep their natural position:
-
-- Cinematic / Clean → lower
-- Viral Pop / Meme → middle
+- Fill / Focus / Backdrop / Preserve framing
+- Compact / Balanced / Immersive video-window sizing
+- word-level Whisper caption timing
+- stable Viral Pop / Meme active-word highlights
+- Cinematic / Clean caption presets
+- caption-safe in-picture placement
+- smart face/group/motion reframing
 
 ## Important after upgrading
 
-Milestone 9 uses new cache names for the reframe plan and rendered Short. That means an already-analysed job can be rendered again and still receive the new stable-caption behaviour.
+**Re-analyse the video** to use the Milestone 10 selector. Existing analysed jobs already have their old clip suggestions saved, so simply re-rendering an old suggestion will not change its start/end timestamps.
 
-For the best word timing, jobs should still come from a Milestone 8+ analysis with word timestamps.
-
-## Recommended movie setup
+A good comparison test is to analyse the same 5–10 minute talking video in Milestone 9 and Milestone 10 and look for:
 
 ```text
-Framing: Focus
-Frame size: Balanced
-Captions: Cinematic
-Caption sync: 0 ms
+Milestone 9 candidate:
+“And before that... [context] ... actual interesting point ... and then...”
+
+Milestone 10 candidate:
+“The biggest mistake I made was...”
+        ↓
+complete idea / turn
+        ↓
+“That’s why I now...”
+        ↓
+CUT
 ```
 
-## Recommended podcast / talking-head setup
+## Recommended development setup
 
-```text
-Framing: Auto or Fill
-Frame size: Balanced
-Captions: Viral Pop
-Caption sync: 0 ms
+Your current local configuration can remain:
+
+```env
+MOCK_MODE=false
+TRANSCRIPTION_BACKEND=local
+RANKING_BACKEND=local
+LOCAL_WHISPER_MODEL=tiny.en
+LOCAL_WHISPER_DEVICE=cpu
+LOCAL_WHISPER_COMPUTE_TYPE=int8
 ```
 
 ## Run the worker
