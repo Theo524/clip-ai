@@ -165,3 +165,25 @@ h1 { font-size: clamp(44px, 7vw, 76px); line-height: .98; letter-spacing: -.055e
 @media (max-width: 700px) {
   .renderOptions { grid-template-columns:1fr; }
 }
+
+/* Milestone 8 */
+.syncControl {
+  margin-top: 12px;
+  padding: 12px 13px;
+  border: 1px solid #2f2f35;
+  border-radius: 12px;
+  background: #0d0d10;
+  text-align: left;
+}
+.syncHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 750;
+}
+.syncHead strong { color: #ddd6fe; font-size: 12px; }
+.syncControl input[type="range"] { width: 100%; margin: 11px 0 5px; accent-color: #8b5cf6; }
+.syncLegend { display: flex; justify-content: space-between; gap: 8px; color: #71717a; font-size: 10px; }

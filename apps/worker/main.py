@@ -15,9 +15,9 @@ from services.media import cut_clip, extract_audio_chunks, render_adaptive_short
 from services.captions import write_clip_ass
 from services.mock import mock_clips
 from services.reframe import load_reframe_plan, plan_smart_reframe, save_reframe_plan
-from services.layouts import choose_caption_style, choose_layout, normalize_frame_size
+from services.layouts import choose_caption_style, choose_caption_zone, choose_layout, normalize_frame_size
 
-app = FastAPI(title="Clip AI Worker", version="0.7.0")
+app = FastAPI(title="Clip AI Worker", version="0.8.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -176,6 +176,7 @@ def health():
         "local_whisper_model": settings.local_whisper_model,
         "api_key_configured": bool(settings.openai_api_key),
         "ffmpeg_available": shutil.which("ffmpeg") is not None,
+        "word_timestamps": True,
     }
 
 
@@ -286,7 +287,7 @@ def render_short(request: RenderClipRequest):
 
     start_ms = round(request.start * 1000)
     end_ms = round(request.end * 1000)
-    plan_filename = f"reframe_{start_ms}_{end_ms}.json"
+    plan_filename = f"reframe_v9_{start_ms}_{end_ms}.json"
     plan_path = clips_dir / plan_filename
 
     try:
@@ -305,13 +306,15 @@ def render_short(request: RenderClipRequest):
         layout_mode = choose_layout(request.layout_mode, reframe_plan)
         caption_style = choose_caption_style(request.caption_style, layout_mode, reframe_plan)
         frame_size = normalize_frame_size(request.frame_size)
+        caption_zone = choose_caption_zone(caption_style, layout_mode, reframe_plan)
 
-        filename = f"short_{layout_mode}_{frame_size}_{caption_style}_{start_ms}_{end_ms}.mp4"
-        subtitle_filename = f"captions_{layout_mode}_{frame_size}_{caption_style}_{start_ms}_{end_ms}.ass"
+        offset_tag = f"p{request.caption_offset_ms}" if request.caption_offset_ms >= 0 else f"m{abs(request.caption_offset_ms)}"
+        filename = f"short_v9_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.mp4"
+        subtitle_filename = f"captions_v9_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.ass"
         output = clips_dir / filename
         subtitles = clips_dir / subtitle_filename
 
-        write_clip_ass(
+        _subtitle_path, word_timed = write_clip_ass(
             transcript,
             request.start,
             request.end,
@@ -321,6 +324,8 @@ def render_short(request: RenderClipRequest):
             frame_size=frame_size,
             width=720,
             height=1280,
+            caption_offset_ms=request.caption_offset_ms,
+            caption_zone=caption_zone,
         )
 
         if not output.exists() or output.stat().st_size == 0:
@@ -358,6 +363,9 @@ def render_short(request: RenderClipRequest):
         tracking_samples=reframe_plan.sample_count,
         face_samples=reframe_plan.face_samples,
         motion_samples=reframe_plan.motion_samples,
+        caption_offset_ms=request.caption_offset_ms,
+        word_timed_captions=word_timed,
+        caption_zone=caption_zone,
     )
 
 

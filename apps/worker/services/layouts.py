@@ -83,3 +83,40 @@ def content_window(frame_size: str, width: int = 720, height: int = 1280) -> tup
     x = (width - window_w) // 2
     y = (height - window_h) // 2
     return x, y, window_w, window_h
+
+
+def choose_caption_zone(style: str, layout: str, plan: ReframePlan) -> str:
+    """Choose an in-picture caption band while trying not to cover faces.
+
+    This is intentionally lightweight: the reframe pass already samples faces, so
+    we reuse its vertical occupancy summary rather than running another detector.
+    """
+    style = (style or "clean").lower().strip()
+    layout = (layout or "fill").lower().strip()
+
+    if style == "cinematic":
+        preferences = ["lower", "middle", "upper"]
+    elif style in {"viral", "meme"}:
+        preferences = ["middle", "lower", "upper"]
+    else:
+        preferences = ["lower", "middle", "upper"]
+
+    counts = {
+        "upper": max(0, plan.face_upper_samples),
+        "middle": max(0, plan.face_middle_samples),
+        "lower": max(0, plan.face_lower_samples),
+    }
+
+    # No reliable face evidence: keep the style's natural placement.
+    total_face_bands = sum(counts.values())
+    if total_face_bands == 0:
+        return preferences[0]
+
+    # Small preference penalty means we only move away from the natural band when
+    # another band is meaningfully less occupied by faces.
+    preference_penalty = {zone: index * 0.18 for index, zone in enumerate(preferences)}
+    scores = {
+        zone: (counts[zone] / total_face_bands) + preference_penalty.get(zone, 0.5)
+        for zone in counts
+    }
+    return min(preferences, key=lambda zone: scores[zone])

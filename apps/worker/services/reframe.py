@@ -16,6 +16,9 @@ class ReframePlan:
     face_samples: int = 0
     motion_samples: int = 0
     multi_face_samples: int = 0
+    face_upper_samples: int = 0
+    face_middle_samples: int = 0
+    face_lower_samples: int = 0
 
     def to_dict(self) -> dict:
         payload = asdict(self)
@@ -33,6 +36,9 @@ class ReframePlan:
             face_samples=int(payload.get("face_samples", 0)),
             motion_samples=int(payload.get("motion_samples", 0)),
             multi_face_samples=int(payload.get("multi_face_samples", 0)),
+            face_upper_samples=int(payload.get("face_upper_samples", 0)),
+            face_middle_samples=int(payload.get("face_middle_samples", 0)),
+            face_lower_samples=int(payload.get("face_lower_samples", 0)),
         )
 
 
@@ -105,6 +111,9 @@ def plan_smart_reframe(
     face_samples = 0
     motion_samples = 0
     multi_face_samples = 0
+    face_upper_samples = 0
+    face_middle_samples = 0
+    face_lower_samples = 0
     successful_samples = 0
 
     for local_t in sample_times:
@@ -136,25 +145,37 @@ def plan_smart_reframe(
         if len(faces):
             face_samples += 1
             face_data = []
-            for x, _y, fw, fh in faces:
+            for x, y, fw, fh in faces:
                 center = (x + fw / 2.0) / resized.shape[1]
+                center_y = (y + fh / 2.0) / resized.shape[0]
                 area = float(fw * fh)
-                face_data.append((x, fw, center, area))
+                face_data.append((x, y, fw, fh, center, center_y, area))
 
-            largest_area = max(item[3] for item in face_data)
-            important = [item for item in face_data if item[3] >= largest_area * 0.35]
+            largest_area = max(item[6] for item in face_data)
+            important = [item for item in face_data if item[6] >= largest_area * 0.35]
+
+            # Keep a lightweight vertical occupancy summary. Caption rendering can use
+            # this later to avoid sitting directly over the dominant face region.
+            weighted_y = sum(item[5] * item[6] for item in important) / max(1.0, sum(item[6] for item in important))
+            if weighted_y < 0.38:
+                face_upper_samples += 1
+            elif weighted_y < 0.68:
+                face_middle_samples += 1
+            else:
+                face_lower_samples += 1
+
             if len(important) >= 2:
                 # Group-aware framing: when two or more similarly important faces are
                 # present, frame their combined horizontal region rather than snapping
                 # to only the largest face. This is much safer for film/dialogue scenes.
                 left = min(item[0] for item in important)
-                right = max(item[0] + item[1] for item in important)
+                right = max(item[0] + item[2] for item in important)
                 raw_center = ((left + right) / 2.0) / resized.shape[1]
                 multi_face_samples += 1
                 source_kind = "face_group"
             else:
                 candidates = []
-                for _x, _fw, center, area in face_data:
+                for _x, _y, _fw, _fh, center, _center_y, area in face_data:
                     proximity = 1.0 if previous_face_center is None else max(0.15, 1.0 - abs(center - previous_face_center))
                     candidates.append((area * proximity, center))
                 _score, raw_center = max(candidates, key=lambda item: item[0])
@@ -229,6 +250,9 @@ def plan_smart_reframe(
         face_samples=face_samples,
         motion_samples=motion_samples,
         multi_face_samples=multi_face_samples,
+        face_upper_samples=face_upper_samples,
+        face_middle_samples=face_middle_samples,
+        face_lower_samples=face_lower_samples,
     )
 
 

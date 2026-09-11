@@ -9,10 +9,18 @@ class AnalyzeRequest(BaseModel):
     max_clips: int = Field(default=6, ge=1, le=12)
 
 
+class TranscriptWord(BaseModel):
+    start: float
+    end: float
+    text: str
+    probability: float | None = None
+
+
 class TranscriptSegment(BaseModel):
     start: float
     end: float
     text: str
+    words: list[TranscriptWord] = Field(default_factory=list)
 
 
 class ClipCandidate(BaseModel):
@@ -38,6 +46,7 @@ class RenderClipRequest(BaseModel):
     layout_mode: Literal["auto", "fill", "focus", "backdrop", "preserve"] = "auto"
     caption_style: Literal["auto", "viral", "cinematic", "clean", "meme"] = "auto"
     frame_size: Literal["compact", "balanced", "immersive"] = "balanced"
+    caption_offset_ms: int = Field(default=0, ge=-1000, le=1000)
 
 
 class RenderClipResponse(BaseModel):
@@ -58,3 +67,6 @@ class RenderClipResponse(BaseModel):
     tracking_samples: int | None = None
     face_samples: int | None = None
     motion_samples: int | None = None
+    caption_offset_ms: int | None = None
+    word_timed_captions: bool | None = None
+    caption_zone: str | None = None

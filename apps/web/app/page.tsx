@@ -40,6 +40,9 @@ type RenderResponse = {
   tracking_samples?: number | null;
   face_samples?: number | null;
   motion_samples?: number | null;
+  caption_offset_ms?: number | null;
+  word_timed_captions?: boolean | null;
+  caption_zone?: "upper" | "middle" | "lower" | null;
 };
 
 type Mode = "upload" | "youtube";
@@ -80,6 +83,12 @@ function captionLabel(style?: RenderResponse["caption_style"]) {
   return "Clean";
 }
 
+function captionZoneLabel(zone?: RenderResponse["caption_zone"]) {
+  if (zone === "upper") return "upper caption-safe zone";
+  if (zone === "middle") return "middle caption-safe zone";
+  return "lower caption-safe zone";
+}
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>("upload");
   const [url, setUrl] = useState("");
@@ -92,6 +101,7 @@ export default function Home() {
   const [layouts, setLayouts] = useState<Record<number, LayoutMode>>({});
   const [captions, setCaptions] = useState<Record<number, CaptionStyle>>({});
   const [frameSizes, setFrameSizes] = useState<Record<number, FrameSize>>({});
+  const [captionOffsets, setCaptionOffsets] = useState<Record<number, number>>({});
 
   const workerUrl = process.env.NEXT_PUBLIC_WORKER_URL || "http://127.0.0.1:8000";
 
@@ -105,6 +115,7 @@ export default function Home() {
     setLayouts({});
     setCaptions({});
     setFrameSizes({});
+    setCaptionOffsets({});
 
     try {
       const form = new FormData();
@@ -164,6 +175,7 @@ export default function Home() {
         body.layout_mode = layouts[index] || "auto";
         body.caption_style = captions[index] || "auto";
         body.frame_size = frameSizes[index] || "balanced";
+        body.caption_offset_ms = captionOffsets[index] || 0;
       }
 
       const res = await fetch(`${workerUrl}${endpoint}`, {
@@ -192,15 +204,15 @@ export default function Home() {
     <div className="shell">
       <nav className="nav">
         <div className="brand">Clip AI</div>
-        <div className="badge">Milestone 7 · in-frame captions</div>
+        <div className="badge">Milestone 9 · stable viral captions</div>
       </nav>
 
       <main className="main">
         <section className="hero">
           <div className="eyebrow">Long video → short-form gold</div>
-          <h1>Vertical Shorts without destroying the scene.</h1>
+          <h1>Stable captions that pop on the word — without blinking.</h1>
           <p className="sub">
-            Talking heads can fill 9:16. Movies and wider scenes use a large central portrait-friendly window instead of a tiny 16:9 letterbox. Captions always stay on the actual picture, never in the surrounding margins.
+            Viral and Meme phrases now stay fixed on screen while only the spoken word highlights and pops. Caption placement also reuses face sampling to choose a safer in-picture upper, middle, or lower zone.
           </p>
 
           <div className="modeTabs">
@@ -269,6 +281,7 @@ export default function Home() {
                 const selectedLayout = layouts[index] || "auto";
                 const selectedCaption = captions[index] || "auto";
                 const selectedFrameSize = frameSizes[index] || "balanced";
+                const selectedOffset = captionOffsets[index] || 0;
 
                 return (
                   <article className="clipCard" key={`${clip.start}-${index}`}>
@@ -326,7 +339,23 @@ export default function Home() {
                             </select>
                           </label>
                         </div>
-                        <p className="optionHint">Focus keeps a large central crop on a quiet dark canvas; Backdrop uses the same crop with blur. Captions are always placed inside the picture itself.</p>
+                        <div className="syncControl">
+                          <div className="syncHead">
+                            <span>Caption sync</span>
+                            <strong>{selectedOffset > 0 ? `+${selectedOffset}` : selectedOffset} ms</strong>
+                          </div>
+                          <input
+                            type="range"
+                            min="-500"
+                            max="500"
+                            step="50"
+                            value={selectedOffset}
+                            disabled={rendering !== null}
+                            onChange={(e) => setCaptionOffsets((current) => ({ ...current, [index]: Number(e.target.value) }))}
+                          />
+                          <div className="syncLegend"><span>Earlier</span><span>Exact Whisper timing</span><span>Later</span></div>
+                        </div>
+                        <p className="optionHint">Word-level timing stays exact. Viral/Meme phrases remain stable while the active word pops, and Auto placement tries to keep captions away from the dominant face region.</p>
 
                         <div className="renderActions">
                           <button
@@ -358,7 +387,7 @@ export default function Home() {
                         <div className="renderMeta">
                           <span>
                             {Math.round(renderedClip.duration)} sec · {isVertical
-                              ? `${layoutLabel(renderedClip.layout_mode)} · ${frameSizeLabel(renderedClip.frame_size)} · ${captionLabel(renderedClip.caption_style)} · ${framingLabel(renderedClip.framing_mode)}`
+                              ? `${layoutLabel(renderedClip.layout_mode)} · ${frameSizeLabel(renderedClip.frame_size)} · ${captionLabel(renderedClip.caption_style)} · ${renderedClip.word_timed_captions ? "word-synced" : "legacy timing"} · ${captionZoneLabel(renderedClip.caption_zone)} · ${framingLabel(renderedClip.framing_mode)}`
                               : "original frame"}
                           </span>
                           <a className="downloadLink" href={downloadUrl}>Download MP4</a>
@@ -369,7 +398,7 @@ export default function Home() {
                 );
               })}
             </div>
-            <div className="footNote">Auto now prefers full Fill for stable single-person shots, Focus for movie/multi-person scenes, and Backdrop for motion-led content. Focus/Backdrop never use a tiny full-width 16:9 letterbox, and every caption stays on the actual video picture.</div>
+            <div className="footNote">Milestone 9 forces a fresh reframe/render cache for Shorts, so the stable-caption and caption-safe placement changes show up even on an existing analysed job.</div>
           </section>
         )}
       </main>
