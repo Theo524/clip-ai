@@ -124,6 +124,22 @@ function captionZoneLabel(zone?: RenderResponse["caption_zone"]) {
   return "lower caption-safe zone";
 }
 
+function exportFilename(title: string) {
+  const clean = title
+    .normalize("NFKD")
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 72);
+  return `${clean || "clip-ai-short"}.mp4`;
+}
+
+function namedDownloadUrl(url: string, title: string) {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}name=${encodeURIComponent(exportFilename(title))}`;
+}
+
 export default function Home() {
   const [mode, setMode] = useState<Mode>("upload");
   const [url, setUrl] = useState("");
@@ -146,6 +162,7 @@ export default function Home() {
   const [copyStyles, setCopyStyles] = useState<Record<number, CopyStyle>>({});
   const [copyBusy, setCopyBusy] = useState<number | null>(null);
   const [copySaved, setCopySaved] = useState<number | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
   const workerUrl = process.env.NEXT_PUBLIC_WORKER_URL || "http://127.0.0.1:8000";
 
@@ -323,6 +340,17 @@ export default function Home() {
     }
   }
 
+  async function copyToClipboard(key: string, text: string) {
+    if (!text.trim()) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(key);
+      window.setTimeout(() => setCopied((current) => current === key ? null : current), 1600);
+    } catch {
+      setError("Could not copy to the clipboard. Select the text and copy it manually.");
+    }
+  }
+
   async function renderMedia(clip: Clip, index: number, kind: RenderKind) {
     if (!result?.job_id) {
       setError("This result does not have a real uploaded source attached.");
@@ -389,7 +417,7 @@ export default function Home() {
         <a className="brand brandLink" href="/">Clip AI</a>
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
-          <div className="badge">Milestone 14 · smart titles</div>
+          <div className="badge">Milestone 15 · ready to post</div>
         </div>
       </nav>
 
@@ -751,21 +779,88 @@ export default function Home() {
                           preload="metadata"
                           src={playableUrl}
                         />
-                        <div className="renderMeta">
-                          <span>
-                            {Math.round(renderedClip.duration)} sec · {isVertical
-                              ? `${layoutLabel(renderedClip.layout_mode)} · ${frameSizeLabel(renderedClip.frame_size)} · ${captionLabel(renderedClip.caption_style)} · ${renderedClip.word_timed_captions ? "word-synced" : "legacy timing"} · ${captionZoneLabel(renderedClip.caption_zone)} · ${framingLabel(renderedClip.framing_mode)}`
-                              : "original frame"}
-                          </span>
-                          <a className="downloadLink" href={downloadUrl}>Download MP4</a>
-                        </div>
+                        {isVertical ? (
+                          <section className="readyPost">
+                            <div className="readyPostHead">
+                              <div>
+                                <span className="readyKicker">Ready to post</span>
+                                <strong>Your video, title and post caption in one place.</strong>
+                              </div>
+                              <span className="readyCheck">✓</span>
+                            </div>
+
+                            <div className="readyPostGrid">
+                              <div className="thumbnailPreview" aria-label="Simple title preview">
+                                <video muted playsInline preload="metadata" src={playableUrl} />
+                                <div className="thumbnailShade" />
+                                <div className="thumbnailTitle">{clip.title}</div>
+                                <span>Title preview</span>
+                              </div>
+
+                              <div className="readyCopyStack">
+                                <div className="readyField">
+                                  <div>
+                                    <span>Title</span>
+                                    <p>{clip.title}</p>
+                                  </div>
+                                  <button type="button" onClick={() => copyToClipboard(`${index}-title`, clip.title)}>
+                                    {copied === `${index}-title` ? "Copied ✓" : "Copy"}
+                                  </button>
+                                </div>
+
+                                <div className="readyField">
+                                  <div>
+                                    <span>Post caption</span>
+                                    <p className="postCaptionText">{clip.social_caption || "No post caption yet. Open Title & post caption to generate one."}</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    disabled={!clip.social_caption}
+                                    onClick={() => copyToClipboard(`${index}-caption`, clip.social_caption || "")}
+                                  >
+                                    {copied === `${index}-caption` ? "Copied ✓" : "Copy"}
+                                  </button>
+                                </div>
+
+                                <button
+                                  className="copyBundleButton"
+                                  type="button"
+                                  disabled={!clip.social_caption}
+                                  onClick={() => copyToClipboard(`${index}-bundle`, `${clip.title}\n\n${clip.social_caption || ""}`)}
+                                >
+                                  {copied === `${index}-bundle` ? "Title + caption copied ✓" : "Copy title + caption"}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="readyDownloadRow">
+                              <div>
+                                <span>Export filename</span>
+                                <strong>{exportFilename(clip.title)}</strong>
+                              </div>
+                              <a className="readyDownload" href={namedDownloadUrl(downloadUrl, clip.title)}>Download Short</a>
+                            </div>
+
+                            <details className="exportDetails">
+                              <summary>Technical details</summary>
+                              <p>
+                                {Math.round(renderedClip.duration)} sec · {layoutLabel(renderedClip.layout_mode)} · {frameSizeLabel(renderedClip.frame_size)} · {captionLabel(renderedClip.caption_style)} · {renderedClip.word_timed_captions ? "word-synced" : "legacy timing"} · {captionZoneLabel(renderedClip.caption_zone)} · {framingLabel(renderedClip.framing_mode)}
+                              </p>
+                            </details>
+                          </section>
+                        ) : (
+                          <div className="renderMeta">
+                            <span>{Math.round(renderedClip.duration)} sec · original frame</span>
+                            <a className="downloadLink" href={namedDownloadUrl(downloadUrl, clip.title)}>Download MP4</a>
+                          </div>
+                        )}
                       </div>
                     )}
                   </article>
                 );
               })}
             </div>
-            <div className="footNote">Milestone 14 generates dialogue-based clip titles and social captions, keeps them editable, and saves your changes with the project.</div>
+            <div className="footNote">Milestone 15 turns each finished Short into a ready-to-post handoff with copy buttons, a title preview, a clean filename, and one obvious download action.</div>
           </section>
         )}
       </main>

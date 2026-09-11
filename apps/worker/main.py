@@ -21,7 +21,7 @@ from services.layouts import choose_caption_style, choose_caption_zone, choose_l
 from services.projects import directory_size, load_project, rendered_media, save_project
 from services.copywriter import dialogue_for_range, generate_clip_copy_local
 
-app = FastAPI(title="Clip AI Worker", version="0.14.0")
+app = FastAPI(title="Clip AI Worker", version="0.15.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -33,6 +33,18 @@ app.add_middleware(
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 SAFE_FILENAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+
+
+def safe_download_name(value: str | None, fallback: str = "clip-ai-short") -> str:
+    """Return a browser-safe, human-readable MP4 download filename."""
+    raw = (value or "").strip()
+    if raw.lower().endswith(".mp4"):
+        raw = raw[:-4]
+    clean = re.sub(r"[^A-Za-z0-9 _-]+", "", raw)
+    clean = re.sub(r"[ _]+", "-", clean).strip("-_")[:80]
+    if not clean:
+        clean = re.sub(r"[^A-Za-z0-9_-]+", "-", fallback).strip("-_") or "clip-ai-short"
+    return f"{clean}.mp4"
 
 
 def is_youtube_url(value: str) -> bool:
@@ -614,6 +626,7 @@ def media_file(
     job_id: str,
     filename: str,
     download: bool = Query(default=False),
+    name: str | None = Query(default=None, max_length=140),
 ):
     if not SAFE_FILENAME.fullmatch(filename) or not filename.lower().endswith(".mp4"):
         raise HTTPException(status_code=400, detail="Invalid media filename.")
@@ -625,5 +638,5 @@ def media_file(
     return FileResponse(
         path,
         media_type="video/mp4",
-        filename=filename if download else None,
+        filename=safe_download_name(name, path.stem) if download else None,
     )

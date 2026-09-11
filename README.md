@@ -1,19 +1,20 @@
-# Clip AI — Milestone 14
+# Clip AI — Milestone 15
 
-Clip AI turns long-form video into short-form clips with local transcription, local moment ranking, adaptive layouts, smart captions, persistent projects, and now dialogue-based clip titles/social copy.
+Clip AI turns long-form video into short-form clips with local transcription, local moment ranking, adaptive layouts, smart captions, persistent projects, dialogue-based copy, and now a ready-to-post export handoff.
 
-## New in Milestone 14
+## New in Milestone 15
 
-Each suggested moment now gets useful copy generated from the exact dialogue inside that selected clip.
+A finished vertical Short now opens a single **Ready to post** panel instead of leaving the user to collect pieces from different controls.
 
-- The clip title is no longer just a chopped transcript opening.
-- Open **Title & post caption** on any clip to edit the generated title.
-- A short social post caption is generated from the same dialogue.
-- Regenerate copy as **Auto**, **Viral**, **Clean**, or **Cinematic**.
-- Manual edits can be saved back into the local project.
-- Reopened projects keep the saved title and social caption.
+- Play the rendered Short.
+- See a simple title/thumbnail-style preview.
+- Copy the generated title with one click.
+- Copy the social caption with one click.
+- Copy title + caption together.
+- Download with a human-readable filename derived from the editable clip title.
+- Keep technical render details collapsed unless they are needed.
 
-The local copywriter deliberately stays grounded in the spoken dialogue; it shortens and reframes wording but does not invent claims that were not in the source.
+The internal render cache still uses stable technical filenames; only the browser download name is polished. That means changing a title does not force the video to re-render.
 
 ## Run
 
@@ -45,4 +46,5 @@ Open `http://localhost:3000`.
 - Stable word highlighting and caption-safe placement
 - Personal upload + YouTube project workflows
 - Persistent local Projects/history screen
+- Ready-to-post export panel with polished download naming
 - FFmpeg short rendering and original clip export

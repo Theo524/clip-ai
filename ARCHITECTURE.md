@@ -1,4 +1,4 @@
-# Clip AI architecture — Milestone 14
+# Clip AI architecture — Milestone 15
 
 ## Inputs
 
@@ -20,6 +20,19 @@ source video
 → adaptive layout plan
 → ASS caption generation
 → FFmpeg final render
+→ ready-to-post export handoff
+
+## Ready-to-post export
+
+The worker stores rendered files under stable internal cache names so repeated renders can be reused. The frontend presents a cleaner export layer on top:
+
+- title preview
+- editable project-backed title/social caption
+- clipboard actions
+- human-readable MP4 filename
+- one obvious Short download action
+
+`GET /media/{job_id}/{filename}?download=true&name=<title>` keeps the internal media path unchanged while returning a safe browser download filename derived from `name`.
 
 ## Dialogue-based copy
 
@@ -57,4 +70,4 @@ The entire `work/` directory is ignored by Git.
 
 ## Future hosted version
 
-The current project index is intentionally file-based for local development. A hosted version can move project metadata into PostgreSQL/Supabase and media into object storage while keeping the processing worker interface largely unchanged. The copy generation layer can also be switched to a hosted language model later without changing the project schema.
+The current project index is intentionally file-based for local development. A hosted version can move project metadata into PostgreSQL/Supabase and media into object storage while keeping the processing worker interface largely unchanged.
