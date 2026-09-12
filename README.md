@@ -1,48 +1,64 @@
-# Clip AI v20.1 · Clip Relay Visual Refresh
+# Clip AI v21 · Long-Term Beta
 
-This package keeps the **v20.1 processing pipeline unchanged** and ports the visual language of Clip Relay onto the Clip AI web app. It is intentionally a design-only refresh so transcription, ranking, rendering, projects and system checks keep the same behaviour.
+Clip AI turns long English-language videos into ranked, reframed, captioned, ready-to-post vertical Shorts. v21 is a reliability and editing release intended to be a stable local beta for an extended testing period.
 
-## Visual refresh
+## v21 highlights
 
-- Clip Relay-inspired dark glass surfaces and softer depth
-- Violet-to-cyan ambient gradients and matching brand mark
-- More compact navigation, status chips and controls
-- Refined upload surface, project cards, Best 3 results and system screen
-- Unified buttons, borders, hover states and scrollbars
-- Responsive mobile treatment without changing the workflow
+### Recoverable long-video processing
+- Persistent task history survives worker restarts.
+- Interrupted projects are marked recoverable instead of disappearing.
+- **Resume** reuses saved source media, transcript/ranking checkpoints and render caches where possible.
+- Project metadata is migrated forward additively and saved atomically.
+- Long jobs keep stage/status information in Projects.
 
----
+### Safer media handling
+- Detailed FFprobe preflight detects missing video/audio streams and unusual media.
+- Odd containers/codecs/frame rates/rotation can be normalized to a stable H.264/AAC working copy before analysis.
+- Free-disk checks run before heavy processing.
+- Temporary/chunk files are cleaned without deleting project outputs.
+- Existing transcript and render caches are retained.
 
-## Original v20.1 Beta Reliability Patch
+### Processing profiles
+Choose one per project:
+- **Low memory** — smaller chunks and fewer CPU threads for constrained machines.
+- **Balanced** — recommended default.
+- **Fast** — larger chunks/more CPU threads when the machine has headroom.
 
-Clip AI turns long English-language videos into ranked, reframed, captioned, ready-to-post vertical clips. v20.1 is a beta reliability/UX patch on top of the v20 local release candidate.
+The default remains lightweight English-only `tiny.en` on CPU.
 
-## What changed in v20.1
+### Editing without rerunning AI
+After Clip AI finds a moment you can:
+- nudge/edit the clip start and end time;
+- load and correct the transcript text used for captions;
+- select a different cover-frame position;
+- re-render only what changed.
 
-### More reliable transcription
-- Keeps the lightweight English-only `tiny.en` default.
-- Checks that a source video actually contains an audio stream before transcription.
-- Local Whisper first uses VAD (speech/silence filtering) for speed.
-- If a chunk returns no transcript, Clip AI automatically retries that chunk **without VAD**. This is useful for quiet film dialogue, music-heavy mixes, or speech VAD mistakenly rejects.
-- If both passes fail, the error now explains that no audible English speech was found instead of only saying “No transcript segments were produced.”
+### Complete export package
+Every rendered Short can be downloaded normally or exported as a ZIP containing:
 
-### Faster repeated work + better long-video feedback
-- Adds a local transcript cache keyed from the video content + transcription model/settings. Re-uploading the same source can reuse the transcript instead of running Whisper again.
-- Existing project transcripts are also reused.
-- Videos of 30 minutes or more are processed in up-to-10-minute audio chunks for more useful progress/cancel checkpoints.
-- Progress messages include chunk counts and an ETA estimate after the first chunk finishes.
-- Local Whisper is explicitly tuned to 4 CPU threads by default. Override with `LOCAL_WHISPER_CPU_THREADS` if needed.
+```text
+short.mp4
+cover.jpg          (when available)
+subtitles.srt
+subtitles.vtt
+metadata.json
+```
 
-> `tiny.en` is already the fastest practical local model in this build. The cache and CPU/progress changes remove wasted work, but a brand-new one-hour video will still take meaningful time on an 8 GB laptop. Cloud transcription is the eventual speed path for production.
+Rendered MP4s also receive a generic `.metadata.json` sidecar containing the saved title/caption and clip metadata. It is intentionally app-agnostic so other local publishing tools can read it without Clip AI depending on them.
 
-### Cleaner home/results experience
-- Homepage headline is now simply **“Turn long videos into ready-to-post Shorts.”**
-- The duplicate System/readiness block was removed from the middle of the home screen. **System remains in the navbar.**
-- Results now put the **Best 3** first with only the information needed to decide: title, score, short “Starts with” preview, Create Short, and an optional “Why this clip?” disclosure.
-- Detailed clip controls, the video-settings guide, saved renders, transcripts/copy controls, and the remaining editing UI are grouped under **More suggestions & editing options**.
-- A rendered Best 3 Short can be previewed/downloaded directly from its compact card.
+### Projects and support
+- Search/filter Projects by title/status/source.
+- Resume recoverable projects from the Projects page.
+- Export a redacted diagnostic ZIP from System when troubleshooting.
+- Task history is persisted locally.
+- Versioned project schema/config migrations protect older projects.
 
-## Run locally
+### Easier local startup
+Run `START_CLIP_AI.bat` from the project root. It checks the main local prerequisites, starts the worker and web app in separate windows, then opens Clip AI.
+
+For a quick prerequisite check without starting the app, run `CHECK_CLIP_AI.bat`.
+
+## Manual startup
 
 ### Worker
 ```bat
@@ -60,18 +76,25 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-## Recommended local transcription settings
+## Recommended local environment
 
 ```env
 TRANSCRIPTION_BACKEND=local
+RANKING_BACKEND=local
 LOCAL_WHISPER_MODEL=tiny.en
 LOCAL_WHISPER_DEVICE=cpu
 LOCAL_WHISPER_COMPUTE_TYPE=int8
 LOCAL_WHISPER_CPU_THREADS=4
+PROCESSING_PROFILE=balanced
+MIN_FREE_DISK_GB=2.0
 ```
 
-The project remains English-first by design.
+`OPENAI_API_KEY` is optional for the local configuration and should never be committed.
 
 ## Tests
 
-v20.1 ships with **41 passing backend tests**. The current frontend TSX files also pass a TypeScript syntax/transpilation check.
+v21 currently ships with **46 passing backend tests**, including persistence/migration, transcription recovery, processing profiles, subtitle exports, ranking/render behavior and reliability checks. Core frontend TSX files also pass a TypeScript transpilation/syntax check.
+
+## Current boundary
+
+This remains a local beta. A future hosted Clip AI service should replace local project media/task persistence with authenticated user accounts, object storage, a database and durable cloud queues/workers. v21 deliberately focuses on making the local product stable rather than prematurely coupling it to that future cloud architecture.

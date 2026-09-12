@@ -99,6 +99,7 @@ type CaptionStyle = "auto" | "viral" | "cinematic" | "clean" | "meme";
 type FrameSize = "auto" | "compact" | "balanced" | "immersive";
 type Platform = "auto" | "shorts" | "tiktok" | "reels";
 type CopyStyle = "auto" | "viral" | "clean" | "cinematic";
+type ProcessingProfile = "low-memory" | "balanced" | "fast";
 
 type RenderResponse = {
   job_id: string;
@@ -240,13 +241,22 @@ export default function Home() {
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [preflight, setPreflight] = useState<SystemPreflight | null>(null);
   const [preflightError, setPreflightError] = useState("");
+  const [processingProfile, setProcessingProfile] = useState<ProcessingProfile>("balanced");
+  const [transcriptText, setTranscriptText] = useState<Record<number, string>>({});
+  const [transcriptLoaded, setTranscriptLoaded] = useState<Record<number, boolean>>({});
+  const [transcriptBusy, setTranscriptBusy] = useState<number | null>(null);
+  const [timingBusy, setTimingBusy] = useState<number | null>(null);
+  const [coverPositions, setCoverPositions] = useState<Record<number, number>>({});
+  const [coverBusy, setCoverBusy] = useState<number | null>(null);
 
   const workerUrl = process.env.NEXT_PUBLIC_WORKER_URL || "http://127.0.0.1:8000";
 
   useEffect(() => {
     const jobId = new URLSearchParams(window.location.search).get("project");
     if (jobId) loadProject(jobId);
-    const seenOnboarding = window.localStorage.getItem("clip-ai-v20-onboarding");
+    const seenOnboarding = window.localStorage.getItem("clip-ai-v21-onboarding") || window.localStorage.getItem("clip-ai-v20-onboarding");
+    const savedProfile = window.localStorage.getItem("clip-ai-processing-profile") as ProcessingProfile | null;
+    if (savedProfile && ["low-memory", "balanced", "fast"].includes(savedProfile)) setProcessingProfile(savedProfile);
     if (!seenOnboarding && !jobId) setOnboardingOpen(true);
     void loadPreflight();
   }, []);
@@ -264,7 +274,7 @@ export default function Home() {
   }
 
   function finishOnboarding() {
-    window.localStorage.setItem("clip-ai-v20-onboarding", "done");
+    window.localStorage.setItem("clip-ai-v21-onboarding", "done");
     setOnboardingOpen(false);
   }
 
@@ -334,6 +344,8 @@ export default function Home() {
       const form = new FormData();
       form.append("file", file);
       form.append("max_clips", "6");
+      form.append("processing_profile", processingProfile);
+      window.localStorage.setItem("clip-ai-processing-profile", processingProfile);
       const res = await fetch(`${workerUrl}/tasks/analyze-upload`, { method: "POST", body: form });
       const started: TaskCreate & { detail?: string } = await res.json();
       if (!res.ok) throw new Error(started.detail || "Analysis could not start");
@@ -393,6 +405,8 @@ export default function Home() {
       form.append("rights_confirmed", "true");
       form.append("file", youtubeFile);
       form.append("max_clips", "6");
+      form.append("processing_profile", processingProfile);
+      window.localStorage.setItem("clip-ai-processing-profile", processingProfile);
       form.append("title", youtubeInfo.title);
       if (youtubeInfo.author_name) form.append("author_name", youtubeInfo.author_name);
       if (youtubeInfo.thumbnail_url) form.append("thumbnail_url", youtubeInfo.thumbnail_url);
@@ -479,6 +493,71 @@ export default function Home() {
     }
   }
 
+  async function saveTiming(index: number) {
+    if (!result?.job_id) return;
+    const clip = result.clips[index];
+    if (!clip || clip.end <= clip.start) { setError("Clip end must be after clip start."); return; }
+    setTimingBusy(index); setError("");
+    try {
+      const res = await fetch(`${workerUrl}/projects/${result.job_id}/clips/${index}/timing`, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ start: clip.start, end: clip.end }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not save trim");
+      updateClipLocal(index, { start: data.start, end: data.end });
+      setTranscriptLoaded((current) => ({ ...current, [index]: false }));
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not save trim"); }
+    finally { setTimingBusy(null); }
+  }
+
+  async function loadTranscriptRange(index: number) {
+    if (!result?.job_id) return;
+    const clip = result.clips[index];
+    setTranscriptBusy(index); setError("");
+    try {
+      const res = await fetch(`${workerUrl}/projects/${result.job_id}/transcript-range?start=${clip.start}&end=${clip.end}`, { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not load captions");
+      setTranscriptText((current) => ({ ...current, [index]: data.text || "" }));
+      setTranscriptLoaded((current) => ({ ...current, [index]: true }));
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not load captions"); }
+    finally { setTranscriptBusy(null); }
+  }
+
+  async function saveTranscriptRange(index: number) {
+    if (!result?.job_id) return;
+    const clip = result.clips[index];
+    setTranscriptBusy(index); setError("");
+    try {
+      const res = await fetch(`${workerUrl}/projects/${result.job_id}/transcript-range`, {
+        method: "PATCH", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ start: clip.start, end: clip.end, text: transcriptText[index] || "" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not save caption corrections");
+      setTranscriptText((current) => ({ ...current, [index]: data.text || "" }));
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not save caption corrections"); }
+    finally { setTranscriptBusy(null); }
+  }
+
+  async function updateCover(index: number) {
+    if (!result?.job_id || !rendered[index]) return;
+    const media = rendered[index];
+    const at = Math.max(0, Math.min(media.duration || 0, coverPositions[index] ?? Math.max(0.15, (media.duration || 1) * 0.34)));
+    setCoverBusy(index); setError("");
+    try {
+      const res = await fetch(`${workerUrl}/projects/${result.job_id}/cover`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ filename: media.filename, at_seconds: at }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not update cover");
+      setRendered((current) => ({ ...current, [index]: { ...current[index], cover_url: `${data.cover_url}?v=${Date.now()}` } }));
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not update cover"); }
+    finally { setCoverBusy(null); }
+  }
+
   async function renderMedia(clip: Clip, index: number, kind: RenderKind, quiet = false): Promise<boolean> {
     if (!result?.job_id) {
       setError("This result does not have a real uploaded source attached.");
@@ -501,6 +580,7 @@ export default function Home() {
         body.frame_size = frameSizes[index] || "auto";
         body.caption_offset_ms = captionOffsets[index] || 0;
         body.platform = platforms[index] || "auto";
+        if (coverPositions[index] !== undefined) body.cover_offset_seconds = coverPositions[index];
       }
 
       const res = await fetch(`${workerUrl}/tasks${endpoint}`, {
@@ -569,7 +649,7 @@ export default function Home() {
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
-          <div className="badge">v20.1 · beta</div>
+          <div className="badge">v21 · long-term beta</div>
         </div>
       </nav>
 
@@ -599,10 +679,18 @@ export default function Home() {
                   onChange={(e) => setFile(e.target.files?.[0] || null)}
                 />
               </label>
+              <label className="profilePicker">
+                <span><strong>Processing profile</strong><small>Balanced is recommended. Low memory is safer on 8 GB PCs.</small></span>
+                <select value={processingProfile} onChange={(e) => setProcessingProfile(e.target.value as ProcessingProfile)} disabled={loading}>
+                  <option value="low-memory">Low memory</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="fast">Fast · higher memory</option>
+                </select>
+              </label>
               <button className="primary wide" disabled={loading || !file}>
                 {loading ? "Running local Whisper…" : "Analyze real video"}
               </button>
-              <p className="localNote">Local Whisper + lightweight visual sampling. Short renders stay at 720×1280 so development remains practical on your PC.</p>
+              <p className="localNote">Local Whisper + checkpointed processing. Clip AI now normalizes unusual media, guards disk space, and resumes from saved stages when possible.</p>
             </form>
           ) : (
             <div className="youtubeFlow">
@@ -653,6 +741,14 @@ export default function Home() {
                     />
                   </label>
 
+                  <label className="profilePicker">
+                    <span><strong>Processing profile</strong><small>Balanced is recommended. Low memory is safer on 8 GB PCs.</small></span>
+                    <select value={processingProfile} onChange={(e) => setProcessingProfile(e.target.value as ProcessingProfile)} disabled={loading}>
+                      <option value="low-memory">Low memory</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="fast">Fast · higher memory</option>
+                    </select>
+                  </label>
                   <label className="rightsCheck">
                     <input
                       type="checkbox"
@@ -1023,6 +1119,24 @@ export default function Home() {
                                 </select>
                               </label>
                             </div>
+                            <details className="advancedPanel clipTrimPanel">
+                              <summary>Trim & caption corrections</summary>
+                              <div className="trimGrid">
+                                <label><span>Start (seconds)</span><input type="number" step="0.1" min="0" value={clip.start} onChange={(e) => updateClipLocal(index, { start: Math.max(0, Number(e.target.value) || 0) })} /></label>
+                                <label><span>End (seconds)</span><input type="number" step="0.1" min="0.1" value={clip.end} onChange={(e) => updateClipLocal(index, { end: Math.max(0.1, Number(e.target.value) || 0.1) })} /></label>
+                                <button type="button" className="copyButton" onClick={() => saveTiming(index)} disabled={timingBusy !== null}>{timingBusy === index ? "Saving…" : "Save trim"}</button>
+                              </div>
+                              <div className="captionCorrection">
+                                {!transcriptLoaded[index] ? (
+                                  <button type="button" className="copyButton" onClick={() => loadTranscriptRange(index)} disabled={transcriptBusy !== null}>{transcriptBusy === index ? "Loading…" : "Load spoken captions"}</button>
+                                ) : (
+                                  <>
+                                    <label><span>Correct transcript used for captions</span><textarea rows={5} value={transcriptText[index] || ""} onChange={(e) => setTranscriptText((current) => ({ ...current, [index]: e.target.value }))} /></label>
+                                    <div className="captionCorrectionActions"><button type="button" className="copyButton saveCopyButton" onClick={() => saveTranscriptRange(index)} disabled={transcriptBusy !== null}>{transcriptBusy === index ? "Saving…" : "Save caption corrections"}</button><small>Saving corrections rebuilds word timing evenly across this clip range on the next render.</small></div>
+                                  </>
+                                )}
+                              </div>
+                            </details>
                             <details className="advancedPanel">
                               <summary>Advanced timing</summary>
                               <div className="syncControl">
@@ -1113,12 +1227,22 @@ export default function Home() {
                               </div>
                             </div>
 
+                            <div className="coverPicker">
+                              <div className="syncHead"><span>Cover frame</span><strong>{(coverPositions[index] ?? Math.max(0.15, renderedClip.duration * 0.34)).toFixed(1)}s</strong></div>
+                              <input type="range" min="0" max={Math.max(0.5, renderedClip.duration - 0.1)} step="0.1" value={coverPositions[index] ?? Math.max(0.15, renderedClip.duration * 0.34)} onChange={(e) => setCoverPositions((current) => ({ ...current, [index]: Number(e.target.value) }))} />
+                              <button type="button" className="copyButton" onClick={() => updateCover(index)} disabled={coverBusy !== null}>{coverBusy === index ? "Updating cover…" : "Use this cover frame"}</button>
+                            </div>
+
                             <div className="readyDownloadRow">
                               <div>
                                 <span>Export filename</span>
                                 <strong>{exportFilename(clip.title)}</strong>
                               </div>
-                              <a className="readyDownload" href={namedDownloadUrl(downloadUrl, clip.title)}>Download Short</a>
+                              <div className="exportButtonStack">
+                                <a className="readyDownload" href={namedDownloadUrl(downloadUrl, clip.title)}>Download Short</a>
+                                <a className="packageDownload" href={`${workerUrl}/projects/${result.job_id}/clips/${index}/export-package?filename=${encodeURIComponent(renderedClip.filename)}`}>Export package · MP4 + cover + SRT/VTT + metadata</a>
+                                <span className="subtitleLinks"><a href={`${workerUrl}/projects/${result.job_id}/clips/${index}/subtitles?format=srt`}>SRT</a><a href={`${workerUrl}/projects/${result.job_id}/clips/${index}/subtitles?format=vtt`}>VTT</a></span>
+                              </div>
                             </div>
 
                             <details className="exportDetails">
@@ -1142,7 +1266,7 @@ export default function Home() {
             </div>
               </div>
             </details>
-            <div className="footNote">v20.1 keeps the editor simple by default while preserving advanced controls when you need them.</div>
+            <div className="footNote">v21 adds recovery, safer long-video processing and export tools without changing the simple Auto-first workflow.</div>
           </section>
         )}
       </main>
@@ -1153,7 +1277,7 @@ export default function Home() {
             <div className="onboardingTop">
               <span className="onboardingMark">✦</span>
               <div>
-                <span className="onboardingKicker">Clip AI v20.1 beta</span>
+                <span className="onboardingKicker">Clip AI v21 long-term beta</span>
                 <h2 id="welcome-title">You do not need to learn the editor first.</h2>
               </div>
             </div>

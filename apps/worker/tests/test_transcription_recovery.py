@@ -9,12 +9,13 @@ def test_empty_vad_chunk_retries_without_vad(tmp_path, monkeypatch):
     media.write_bytes(b"not-a-real-video-but-enough-for-cache-key")
     monkeypatch.setattr(main.settings, "work_dir", str(tmp_path / "work"))
     monkeypatch.setattr(main.settings, "transcription_backend", "local")
-    monkeypatch.setattr(main, "probe_media_audio", lambda _path: {"has_audio": True, "duration": 180.0, "audio_codec": "aac"})
+    monkeypatch.setattr(main, "probe_media", lambda _path: {"has_video": True, "has_audio": True, "duration": 180.0, "audio_codec": "aac", "video_codec": "h264", "fps": 30.0, "rotation": 0, "size_bytes": media.stat().st_size})
+    monkeypatch.setattr(main, "should_normalize_media", lambda _info, _path: (False, []))
     monkeypatch.setattr(main, "extract_audio_chunks", lambda *args, **kwargs: [str(tmp_path / "audio_000.mp3")])
 
     calls = []
 
-    def fake_transcribe(_path, offset_seconds=0.0, *, vad_filter=True):
+    def fake_transcribe(_path, offset_seconds=0.0, *, vad_filter=True, cpu_threads=None):
         calls.append(vad_filter)
         if vad_filter:
             return []
@@ -40,7 +41,8 @@ def test_same_media_reuses_transcript_cache(tmp_path, monkeypatch):
     media.write_bytes(b"same-video-content" * 100)
     monkeypatch.setattr(main.settings, "work_dir", str(tmp_path / "work"))
     monkeypatch.setattr(main.settings, "transcription_backend", "local")
-    monkeypatch.setattr(main, "probe_media_audio", lambda _path: {"has_audio": True, "duration": 120.0, "audio_codec": "aac"})
+    monkeypatch.setattr(main, "probe_media", lambda _path: {"has_video": True, "has_audio": True, "duration": 120.0, "audio_codec": "aac", "video_codec": "h264", "fps": 30.0, "rotation": 0, "size_bytes": media.stat().st_size})
+    monkeypatch.setattr(main, "should_normalize_media", lambda _info, _path: (False, []))
     monkeypatch.setattr(main, "extract_audio_chunks", lambda *args, **kwargs: [str(tmp_path / "audio_000.mp3")])
     monkeypatch.setattr(
         main,
@@ -52,7 +54,7 @@ def test_same_media_reuses_transcript_cache(tmp_path, monkeypatch):
 
     calls = {"count": 0}
 
-    def first_transcribe(_path, offset_seconds=0.0, *, vad_filter=True):
+    def first_transcribe(_path, offset_seconds=0.0, *, vad_filter=True, cpu_threads=None):
         calls["count"] += 1
         return [TranscriptSegment(start=0.0, end=4.0, text="Cache this English dialogue.")]
 

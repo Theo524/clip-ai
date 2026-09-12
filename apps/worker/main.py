@@ -8,15 +8,16 @@ import re
 import shutil
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 
-from models import AnalyzeRequest, AnalyzeResponse, CleanupResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ProjectDetail, ProjectSummary, RenderClipRequest, RenderClipResponse, SystemCheck, SystemPreflightResponse, TaskCreateResponse, TaskStatusResponse, TranscriptSegment, YouTubeInfoResponse
+from models import AnalyzeRequest, AnalyzeResponse, CleanupResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ClipTimingUpdateRequest, CoverRequest, ProjectDetail, ProjectSummary, RenderClipRequest, RenderClipResponse, SystemCheck, SystemPreflightResponse, TaskCreateResponse, TaskStatusResponse, TranscriptEditRequest, TranscriptRangeResponse, TranscriptSegment, YouTubeInfoResponse
 from settings import settings
-from services.media import cut_clip, extract_audio_chunks, extract_cover_frame, probe_media_audio, render_adaptive_short
+from services.media import cut_clip, extract_audio_chunks, extract_cover_frame, normalize_media, probe_media, probe_media_audio, render_adaptive_short, should_normalize_media
 from services.captions import write_clip_ass
 from services.mock import mock_clips
 from services.reframe import ReframePlan, load_reframe_plan, plan_smart_reframe, save_reframe_plan
@@ -24,10 +25,13 @@ from services.layouts import auto_profile, choose_caption_style, choose_caption_
 from services.projects import cleanup_stale_work, directory_size, load_project, rendered_media, save_project
 from services.copywriter import dialogue_for_range, generate_clip_copy_local
 from services.tasks import tasks
+from services.profiles import get_processing_profile, PROFILES
+from services.subtitles_export import to_srt, to_vtt
+from services.diagnostics import build_diagnostic_zip
 from services.transcript_cache import load_cached_transcript, save_cached_transcript, transcript_cache_key
 
-APP_VERSION = "20.1.0-beta.1"
-RELEASE_NAME = "Beta Reliability Patch"
+APP_VERSION = "21.0.0-beta.1"
+RELEASE_NAME = "Long-Term Beta"
 
 app = FastAPI(title="Clip AI Worker", version=APP_VERSION)
 app.add_middleware(
@@ -44,6 +48,7 @@ SAFE_FILENAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 # Clean leftovers from interrupted local runs when the worker starts.
 STARTUP_CLEANUP = cleanup_stale_work(Path(settings.work_dir))
+tasks.configure(Path(settings.work_dir))
 
 
 def safe_download_name(value: str | None, fallback: str = "clip-ai-short") -> str:
@@ -98,6 +103,9 @@ def _find_source(job_id: str) -> Path:
     if not job_dir.exists():
         raise HTTPException(status_code=404, detail="This analysis job no longer exists.")
 
+    normalized = job_dir / "normalized.mp4"
+    if normalized.exists() and normalized.is_file() and normalized.stat().st_size > 0:
+        return normalized
     sources = sorted(path for path in job_dir.glob("source.*") if path.is_file())
     if not sources:
         raise HTTPException(status_code=404, detail="Original source video was not found for this job.")
@@ -118,7 +126,7 @@ def _load_transcript(job_id: str) -> list[TranscriptSegment]:
         raise HTTPException(status_code=500, detail=f"Stored transcript could not be read: {exc}") from exc
 
 
-def _transcribe_chunk(chunk_path: str, offset_seconds: float, *, vad_filter: bool = True):
+def _transcribe_chunk(chunk_path: str, offset_seconds: float, *, vad_filter: bool = True, cpu_threads: int | None = None):
     backend = settings.transcription_backend.lower().strip()
 
     if backend == "local":
@@ -130,7 +138,7 @@ def _transcribe_chunk(chunk_path: str, offset_seconds: float, *, vad_filter: boo
             compute_type=settings.local_whisper_compute_type,
             offset_seconds=offset_seconds,
             vad_filter=vad_filter,
-            cpu_threads=settings.local_whisper_cpu_threads,
+            cpu_threads=cpu_threads or settings.local_whisper_cpu_threads,
         )
 
     if backend == "openai":
@@ -197,6 +205,7 @@ def analyze_local_media(
     source_type: str = "upload",
     author_name: str | None = None,
     thumbnail_url: str | None = None,
+    processing_profile: str | None = None,
     progress=None,
     cancel_event=None,
 ) -> AnalyzeResponse:
@@ -204,6 +213,7 @@ def analyze_local_media(
     job_dir = _job_dir(resolved_job_id)
     job_dir.mkdir(parents=True, exist_ok=True)
     audio_dir = job_dir / "audio"
+    profile = get_processing_profile(processing_profile or settings.processing_profile)
 
     def notify(value: int, stage: str, message: str) -> None:
         if progress is not None:
@@ -215,17 +225,47 @@ def analyze_local_media(
 
     try:
         check_cancel()
-        notify(4, "Checking media", "Checking the video's audio track…")
-        media_info = probe_media_audio(media_path)
-        if not media_info.get("has_audio"):
+        notify(4, "Checking media", "Checking codecs, audio, duration and disk space…")
+        detailed_info = probe_media(media_path)
+        if not detailed_info.get("has_video"):
+            raise RuntimeError("This file does not contain a readable video stream.")
+        if not detailed_info.get("has_audio"):
             raise RuntimeError("This video has no audio track. Clip AI needs spoken audio to find clip moments.")
+        usage = shutil.disk_usage(Path(settings.work_dir).resolve())
+        source_size = int(detailed_info.get("size_bytes") or 0)
+        # Keep at least the configured floor plus enough room for a working copy/renders.
+        required_free = max(int(settings.min_free_disk_gb * (1024 ** 3)), source_size * 2)
+        if usage.free < required_free:
+            raise RuntimeError(f"Not enough free disk space for safe processing. Free at least {required_free / (1024 ** 3):.1f} GB and try again.")
 
-        duration = float(media_info.get("duration") or 0.0)
-        # Ten-minute chunks give long videos more useful progress/cancel checkpoints without
-        # multiplying model loads. Short videos keep the user's configured chunk size.
-        effective_chunk_seconds = settings.audio_chunk_seconds
+        working_media = media_path
+        normalize_needed, normalize_reasons = should_normalize_media(detailed_info, media_path)
+        normalized_path = job_dir / "normalized.mp4"
+        if normalize_needed:
+            if normalized_path.exists() and normalized_path.stat().st_size > 0:
+                notify(8, "Using normalized media", "Reusing the stable working copy created earlier.")
+            else:
+                notify(6, "Normalizing media", f"Creating a stable working copy ({', '.join(normalize_reasons)})…")
+                normalize_media(media_path, str(normalized_path), cancel_event=cancel_event, preset=profile.render_preset)
+            working_media = str(normalized_path)
+
+        duration = float(detailed_info.get("duration") or 0.0)
+        effective_chunk_seconds = min(settings.audio_chunk_seconds, profile.chunk_seconds)
         if duration >= 1800:
-            effective_chunk_seconds = min(effective_chunk_seconds, 600)
+            effective_chunk_seconds = min(effective_chunk_seconds, 600 if profile.name != "low-memory" else 300)
+
+        save_project(job_dir, {
+            "job_id": resolved_job_id,
+            "title": project_title or Path(media_path).name,
+            "source_type": source_type,
+            "source_url": source_label if source_type == "youtube" else None,
+            "author_name": author_name,
+            "thumbnail_url": thumbnail_url,
+            "status": "analyzing",
+            "processing_profile": profile.name,
+            "media_preflight": detailed_info,
+            "normalized": normalize_needed,
+        })
 
         transcript_path = job_dir / "transcript.json"
         cache_root = Path(settings.work_dir) / "cache" / "transcripts"
@@ -252,7 +292,7 @@ def analyze_local_media(
             if audio_dir.exists():
                 shutil.rmtree(audio_dir, ignore_errors=True)
             chunks = extract_audio_chunks(
-                media_path,
+                working_media,
                 str(audio_dir),
                 chunk_seconds=effective_chunk_seconds,
                 cancel_event=cancel_event,
@@ -273,6 +313,7 @@ def analyze_local_media(
                     chunk_path,
                     offset_seconds=index * effective_chunk_seconds,
                     vad_filter=True,
+                    cpu_threads=profile.cpu_threads,
                 )
                 # VAD is excellent for speed but can reject quiet film dialogue/music-heavy
                 # mixes. An empty chunk gets one automatic full-audio retry.
@@ -283,6 +324,7 @@ def analyze_local_media(
                         chunk_path,
                         offset_seconds=index * effective_chunk_seconds,
                         vad_filter=False,
+                        cpu_threads=profile.cpu_threads,
                     )
                 chunk_times.append(max(0.01, time.monotonic() - started))
                 segments.extend(chunk_segments)
@@ -303,10 +345,18 @@ def analyze_local_media(
             encoding="utf-8",
         )
         save_cached_transcript(cache_root, cache_key, segments)
+        save_project(job_dir, {"status": "transcribed", "processing_profile": profile.name})
 
         check_cancel()
-        notify(74, "Finding moments", "Ranking the strongest standalone moments…")
-        clips = _rank_segments(segments, max_clips=max_clips)
+        existing_project = load_project(job_dir) or {}
+        existing_clips = existing_project.get("clips") or []
+        if existing_clips and len(existing_clips) >= min(max_clips, len(existing_clips)):
+            notify(78, "Using ranked moments", "Reusing the saved clip-ranking checkpoint…")
+            clips = [ClipCandidate.model_validate(item) for item in existing_clips[:max_clips]]
+        else:
+            notify(74, "Finding moments", "Ranking the strongest standalone moments…")
+            clips = _rank_segments(segments, max_clips=max_clips)
+            save_project(job_dir, {"status": "ranked", "clips": [clip.model_dump() for clip in clips], "processing_profile": profile.name})
 
         notify(84, "Writing titles", "Creating dialogue-based titles and post captions…")
         for idx, clip in enumerate(clips):
@@ -331,6 +381,8 @@ def analyze_local_media(
                 "author_name": author_name,
                 "thumbnail_url": thumbnail_url,
                 "clips": [clip.model_dump() for clip in clips],
+                "status": "ready",
+                "processing_profile": profile.name,
             },
         )
         notify(98, "Cleaning up", "Removing temporary audio files…")
@@ -344,6 +396,10 @@ def analyze_local_media(
             job_id=resolved_job_id,
         )
     except CancelledError:
+        try:
+            save_project(job_dir, {"status": "cancelled", "processing_profile": profile.name})
+        except Exception:
+            pass
         if audio_dir.exists():
             shutil.rmtree(audio_dir, ignore_errors=True)
         raise
@@ -352,6 +408,10 @@ def analyze_local_media(
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
+        try:
+            save_project(job_dir, {"status": "interrupted", "processing_profile": profile.name, "last_error": str(exc)})
+        except Exception:
+            pass
         if settings.cleanup_temp_audio and audio_dir.exists():
             shutil.rmtree(audio_dir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=f"Analysis failed: {exc}") from exc
@@ -403,7 +463,7 @@ def _system_preflight() -> SystemPreflightResponse:
 
     usage = shutil.disk_usage(root)
     free_gb = usage.free / (1024 ** 3)
-    disk_ok = free_gb >= 2.0
+    disk_ok = free_gb >= settings.min_free_disk_gb
     add("disk", "Free disk space", disk_ok, f"{free_gb:.1f} GB free.", "warning" if disk_ok else "required")
 
     project_count = 0
@@ -484,6 +544,11 @@ def task_status(task_id: str):
     return TaskStatusResponse.model_validate(record)
 
 
+@app.get("/tasks", response_model=list[TaskStatusResponse])
+def task_history(limit: int = Query(default=50, ge=1, le=250)):
+    return [TaskStatusResponse.model_validate(item) for item in tasks.list(limit)]
+
+
 @app.post("/tasks/{task_id}/cancel", response_model=TaskStatusResponse)
 def cancel_task(task_id: str):
     record = tasks.cancel(task_id)
@@ -506,6 +571,7 @@ async def analyze_youtube_owned(
     title: str | None = Form(default=None),
     author_name: str | None = Form(default=None),
     thumbnail_url: str | None = Form(default=None),
+    processing_profile: str = Form(default="balanced"),
 ):
     if not is_youtube_url(source_url):
         raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
@@ -546,6 +612,7 @@ async def analyze_youtube_owned(
         source_type="youtube",
         author_name=author_name,
         thumbnail_url=thumbnail_url,
+        processing_profile=processing_profile,
     )
 
 
@@ -569,13 +636,14 @@ def analyze(request: AnalyzeRequest):
             detail="Direct YouTube ingestion is not connected yet. Upload an authorised video file for real analysis.",
         )
 
-    return analyze_local_media(request.local_media_path, source_url, request.max_clips)
+    return analyze_local_media(request.local_media_path, source_url, request.max_clips, processing_profile=request.processing_profile)
 
 
 @app.post("/tasks/analyze-upload", response_model=TaskCreateResponse, status_code=202)
 async def start_analyze_upload_task(
     file: UploadFile = File(...),
     max_clips: int = Form(default=6),
+    processing_profile: str = Form(default="balanced"),
 ):
     if max_clips < 1 or max_clips > 12:
         raise HTTPException(status_code=422, detail="max_clips must be between 1 and 12.")
@@ -597,15 +665,21 @@ async def start_analyze_upload_task(
     finally:
         await file.close()
 
+    profile_name = get_processing_profile(processing_profile).name
+    save_project(job_dir, {
+        "job_id": job_id, "title": filename, "source_type": "upload",
+        "clips": [], "status": "queued", "processing_profile": profile_name,
+    })
+
     def runner(task_id, cancel_event):
         return analyze_local_media(
             str(saved_path), filename, max_clips,
-            job_id=job_id, project_title=filename, source_type="upload",
+            job_id=job_id, project_title=filename, source_type="upload", processing_profile=profile_name,
             progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
             cancel_event=cancel_event,
         )
 
-    record = tasks.create("analysis", runner, job_id=job_id)
+    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips})
     return TaskCreateResponse(task_id=record["task_id"], job_id=job_id, status=record["status"])
 
 
@@ -618,6 +692,7 @@ async def start_analyze_youtube_task(
     title: str | None = Form(default=None),
     author_name: str | None = Form(default=None),
     thumbnail_url: str | None = Form(default=None),
+    processing_profile: str = Form(default="balanced"),
 ):
     if not is_youtube_url(source_url):
         raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
@@ -647,17 +722,23 @@ async def start_analyze_youtube_task(
         json.dumps({"source_url": source_url, "source_filename": filename}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    profile_name = get_processing_profile(processing_profile).name
+    save_project(job_dir, {
+        "job_id": job_id, "title": title or filename, "source_type": "youtube", "source_url": source_url,
+        "author_name": author_name, "thumbnail_url": thumbnail_url, "clips": [], "status": "queued",
+        "processing_profile": profile_name,
+    })
 
     def runner(task_id, cancel_event):
         return analyze_local_media(
             str(saved_path), source_url, max_clips,
             job_id=job_id, project_title=title or filename, source_type="youtube",
-            author_name=author_name, thumbnail_url=thumbnail_url,
+            author_name=author_name, thumbnail_url=thumbnail_url, processing_profile=profile_name,
             progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
             cancel_event=cancel_event,
         )
 
-    record = tasks.create("analysis", runner, job_id=job_id)
+    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips})
     return TaskCreateResponse(task_id=record["task_id"], job_id=job_id, status=record["status"])
 
 
@@ -665,6 +746,7 @@ async def start_analyze_youtube_task(
 async def analyze_upload(
     file: UploadFile = File(...),
     max_clips: int = Form(default=6),
+    processing_profile: str = Form(default="balanced"),
 ):
     if max_clips < 1 or max_clips > 12:
         raise HTTPException(status_code=422, detail="max_clips must be between 1 and 12.")
@@ -702,6 +784,7 @@ async def analyze_upload(
         job_id=job_id,
         project_title=filename,
         source_type="upload",
+        processing_profile=processing_profile,
     )
 
 
@@ -721,6 +804,8 @@ def _project_summary(job_dir: Path, data: dict) -> ProjectSummary:
         clip_count=len(clips),
         render_count=len(renders),
         storage_bytes=directory_size(job_dir),
+        status=str(data.get("status") or "ready"),
+        processing_profile=str(data.get("processing_profile") or "balanced"),
     )
 
 
@@ -753,6 +838,182 @@ def get_project(job_id: str):
         clips=data.get("clips") or [],
         renders=rendered_media(job_dir, job_id),
     )
+
+
+
+@app.post("/projects/{job_id}/resume", response_model=TaskCreateResponse, status_code=202)
+def resume_project(job_id: str):
+    job_dir = _job_dir(job_id)
+    data = load_project(job_dir)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Saved project not found.")
+    source = _find_source(job_id)
+    profile_name = str(data.get("processing_profile") or settings.processing_profile)
+    source_type = "youtube" if data.get("source_type") == "youtube" else "upload"
+    source_label = str(data.get("source_url") or data.get("title") or source.name)
+    max_clips = max(3, len(data.get("clips") or []) or 6)
+
+    def runner(task_id, cancel_event):
+        return analyze_local_media(
+            str(source), source_label, max_clips,
+            job_id=job_id,
+            project_title=str(data.get("title") or source.name),
+            source_type=source_type,
+            author_name=data.get("author_name"),
+            thumbnail_url=data.get("thumbnail_url"),
+            processing_profile=profile_name,
+            progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
+            cancel_event=cancel_event,
+        )
+
+    record = tasks.create("analysis", runner, job_id=job_id, spec={"resume": True, "profile": profile_name})
+    return TaskCreateResponse(task_id=record["task_id"], job_id=job_id, status=record["status"])
+
+
+@app.patch("/projects/{job_id}/clips/{clip_index}/timing")
+def update_clip_timing(job_id: str, clip_index: int, request: ClipTimingUpdateRequest):
+    if request.end <= request.start:
+        raise HTTPException(status_code=422, detail="Clip end must be greater than clip start.")
+    if request.end - request.start > 180:
+        raise HTTPException(status_code=422, detail="Clips are limited to 180 seconds.")
+    job_dir, data, _clip = _saved_clip(job_id, clip_index)
+    clips = list(data.get("clips") or [])
+    clips[clip_index] = {**clips[clip_index], "start": round(request.start, 3), "end": round(request.end, 3)}
+    save_project(job_dir, {**data, "clips": clips})
+    return ClipCandidate.model_validate(clips[clip_index])
+
+
+@app.get("/projects/{job_id}/transcript-range", response_model=TranscriptRangeResponse)
+def transcript_range(job_id: str, start: float = Query(ge=0), end: float = Query(gt=0)):
+    if end <= start:
+        raise HTTPException(status_code=422, detail="end must be greater than start")
+    segments = _load_transcript(job_id)
+    selected = [s for s in segments if s.end >= start and s.start <= end]
+    return TranscriptRangeResponse(start=start, end=end, text=" ".join(s.text.strip() for s in selected if s.text.strip()), segment_count=len(selected))
+
+
+@app.patch("/projects/{job_id}/transcript-range", response_model=TranscriptRangeResponse)
+def edit_transcript_range(job_id: str, request: TranscriptEditRequest):
+    if request.end <= request.start:
+        raise HTTPException(status_code=422, detail="end must be greater than start")
+    transcript = _load_transcript(job_id)
+    text = " ".join(request.text.split())
+    keep = [s for s in transcript if s.end < request.start or s.start > request.end]
+    words = text.split()
+    new_segment = None
+    if words:
+        duration = max(0.1, request.end - request.start)
+        word_items = []
+        for i, word in enumerate(words):
+            a = request.start + duration * (i / len(words))
+            b = request.start + duration * ((i + 1) / len(words))
+            word_items.append({"start": a, "end": b, "text": word})
+        new_segment = TranscriptSegment(start=request.start, end=request.end, text=text, words=word_items)
+        keep.append(new_segment)
+    keep.sort(key=lambda item: item.start)
+    transcript_path = _job_dir(job_id) / "transcript.json"
+    transcript_path.write_text(json.dumps([item.model_dump() for item in keep], ensure_ascii=False, indent=2), encoding="utf-8")
+    project = load_project(_job_dir(job_id)) or {}
+    try:
+        transcript_revision = int(project.get("transcript_revision", 0)) + 1
+    except (TypeError, ValueError):
+        transcript_revision = 1
+    save_project(
+        _job_dir(job_id),
+        {**project, "transcript_edited": True, "transcript_revision": transcript_revision},
+    )
+    return TranscriptRangeResponse(start=request.start, end=request.end, text=text, segment_count=1 if new_segment else 0)
+
+
+@app.get("/projects/{job_id}/clips/{clip_index}/subtitles")
+def export_subtitles(job_id: str, clip_index: int, format: str = Query(default="srt", pattern="^(srt|vtt)$")):
+    _job_dir_value, _data, clip = _saved_clip(job_id, clip_index)
+    transcript = _load_transcript(job_id)
+    body = to_srt(transcript, clip.start, clip.end) if format == "srt" else to_vtt(transcript, clip.start, clip.end)
+    media_type = "application/x-subrip" if format == "srt" else "text/vtt"
+    return PlainTextResponse(body, media_type=media_type, headers={"Content-Disposition": f'attachment; filename="clip-ai-{clip_index + 1}.{format}"'})
+
+
+@app.post("/projects/{job_id}/cover")
+def regenerate_cover(job_id: str, request: CoverRequest):
+    if not SAFE_FILENAME.fullmatch(request.filename) or not request.filename.lower().endswith(".mp4"):
+        raise HTTPException(status_code=400, detail="Invalid render filename.")
+    clips_dir = _job_dir(job_id) / "clips"
+    source = clips_dir / request.filename
+    if not source.exists():
+        raise HTTPException(status_code=404, detail="Rendered Short not found.")
+    cover_name = f"cover_custom_{Path(request.filename).stem}.jpg"
+    cover_path = clips_dir / cover_name
+    extract_cover_frame(str(source), str(cover_path), request.at_seconds)
+    return {"cover_url": f"/media/{job_id}/{cover_name}", "at_seconds": request.at_seconds}
+
+
+@app.get("/projects/{job_id}/clips/{clip_index}/export-package")
+def export_package(job_id: str, clip_index: int, filename: str = Query(..., min_length=1, max_length=240)):
+    job_dir, data, clip = _saved_clip(job_id, clip_index)
+    if not SAFE_FILENAME.fullmatch(filename) or not filename.lower().endswith(".mp4"):
+        raise HTTPException(status_code=400, detail="Invalid render filename.")
+    media = job_dir / "clips" / filename
+    if not media.exists():
+        raise HTTPException(status_code=404, detail="Rendered Short not found.")
+    transcript = _load_transcript(job_id)
+    exports = job_dir / "exports"
+    exports.mkdir(parents=True, exist_ok=True)
+    package_path = exports / f"{Path(filename).stem}-package.zip"
+    metadata = {
+        "schema": 1,
+        "app": "Clip AI",
+        "app_version": APP_VERSION,
+        "project_id": job_id,
+        "project_title": data.get("title"),
+        "title": clip.title,
+        "social_caption": clip.social_caption or "",
+        "start": clip.start,
+        "end": clip.end,
+        "score": clip.score,
+        "source_type": data.get("source_type"),
+        "render_filename": filename,
+        "transcript_revision": int(data.get("transcript_revision", 0) or 0),
+    }
+    sidecar = media.with_suffix(".metadata.json")
+    sidecar.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    custom_cover = job_dir / "clips" / f"cover_custom_{Path(filename).stem}.jpg"
+    cover_candidates = ([custom_cover] if custom_cover.exists() else []) + sorted(
+        (job_dir / "clips").glob(f"cover*_{round(clip.start*1000)}_{round(clip.end*1000)}.jpg"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    with zipfile.ZipFile(package_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(media, "short.mp4")
+        zf.writestr("subtitles.srt", to_srt(transcript, clip.start, clip.end))
+        zf.writestr("subtitles.vtt", to_vtt(transcript, clip.start, clip.end))
+        zf.writestr("metadata.json", json.dumps(metadata, ensure_ascii=False, indent=2))
+        if cover_candidates:
+            zf.write(cover_candidates[0], "cover.jpg")
+    return FileResponse(package_path, media_type="application/zip", filename=f"{safe_download_name(clip.title)[:-4]}-package.zip")
+
+
+@app.get("/system/diagnostics")
+def diagnostic_export():
+    root = Path(settings.work_dir).resolve()
+    report_dir = root / "_diagnostics"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = report_dir / f"clip-ai-diagnostics-{stamp}.zip"
+    build_diagnostic_zip(
+        root, target,
+        app_version=APP_VERSION,
+        release_name=RELEASE_NAME,
+        settings_summary={
+            "transcription_backend": settings.transcription_backend,
+            "ranking_backend": settings.ranking_backend,
+            "local_whisper_model": settings.local_whisper_model,
+            "processing_profile": settings.processing_profile,
+            "audio_chunk_seconds": settings.audio_chunk_seconds,
+            "cleanup_temp_audio": settings.cleanup_temp_audio,
+        },
+        tasks=tasks.list(100),
+    )
+    return FileResponse(target, media_type="application/zip", filename=target.name)
 
 
 def _saved_clip(job_id: str, clip_index: int) -> tuple[Path, dict, ClipCandidate]:
@@ -852,6 +1113,19 @@ def _render_clip_core(request: RenderClipRequest, *, progress=None, cancel_event
     project = load_project(job_dir)
     if project is not None:
         save_project(job_dir, project)
+        # Generic metadata sidecar: useful to any downstream publishing/archive tool.
+        clip_match = next((item for item in (project.get("clips") or []) if abs(float(item.get("start", -1)) - request.start) < 0.05 and abs(float(item.get("end", -1)) - request.end) < 0.05), None)
+        metadata = {
+            "schema": 1, "app": "Clip AI", "app_version": APP_VERSION, "project_id": request.job_id,
+            "project_title": project.get("title"), "render_filename": filename,
+            "title": (clip_match or {}).get("title") or project.get("title") or "Clip AI Short",
+            "social_caption": (clip_match or {}).get("social_caption") or "",
+            "start": request.start, "end": request.end, "transcript_revision": int(project.get("transcript_revision", 0) or 0),
+        }
+        try:
+            (clips_dir / f"{Path(filename).stem}.metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
 
     media_url = f"/media/{request.job_id}/{filename}"
     return RenderClipResponse(
@@ -899,6 +1173,11 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
     source = _find_source(request.job_id)
     transcript = _load_transcript(request.job_id)
     job_dir = _job_dir(request.job_id)
+    project_for_render = load_project(job_dir) or {}
+    try:
+        transcript_revision = max(0, int(project_for_render.get("transcript_revision", 0)))
+    except (TypeError, ValueError):
+        transcript_revision = 0
     clips_dir = job_dir / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
 
@@ -938,8 +1217,11 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
         resolved_profile = auto_profile(layout_mode, caption_style, reframe_plan)
 
         offset_tag = f"p{request.caption_offset_ms}" if request.caption_offset_ms >= 0 else f"m{abs(request.caption_offset_ms)}"
-        filename = f"short_v19_1_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.mp4"
-        subtitle_filename = f"captions_v19_1_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{start_ms}_{end_ms}.ass"
+        # Caption edits increment transcript_revision. Including it in the cache key ensures
+        # an edited transcript never reuses a Short rendered with stale caption text.
+        revision_tag = f"tr{transcript_revision}"
+        filename = f"short_v21_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{revision_tag}_{start_ms}_{end_ms}.mp4"
+        subtitle_filename = f"captions_v21_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{revision_tag}_{start_ms}_{end_ms}.ass"
         output = clips_dir / filename
         subtitles = clips_dir / subtitle_filename
 
@@ -994,12 +1276,13 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
                 reframe_plan = safe_plan
 
         check_cancel()
-        cover_filename = f"cover_v19_1_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{start_ms}_{end_ms}.jpg"
+        cover_filename = f"cover_v21_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{revision_tag}_{start_ms}_{end_ms}.jpg"
         cover_path = clips_dir / cover_filename
         if not cover_path.exists() or cover_path.stat().st_size == 0:
             notify(92, "Creating cover", "Extracting a suggested cover frame…")
+            cover_at = request.cover_offset_seconds if request.cover_offset_seconds is not None else max(0.15, (request.end - request.start) * 0.34)
             extract_cover_frame(
-                str(output), str(cover_path), max(0.15, (request.end - request.start) * 0.34),
+                str(output), str(cover_path), cover_at,
                 cancel_event=cancel_event,
             )
         notify(97, "Saving render", "Adding the finished Short to this project…")
@@ -1013,6 +1296,19 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
     project = load_project(job_dir)
     if project is not None:
         save_project(job_dir, project)
+        # Generic metadata sidecar: useful to any downstream publishing/archive tool.
+        clip_match = next((item for item in (project.get("clips") or []) if abs(float(item.get("start", -1)) - request.start) < 0.05 and abs(float(item.get("end", -1)) - request.end) < 0.05), None)
+        metadata = {
+            "schema": 1, "app": "Clip AI", "app_version": APP_VERSION, "project_id": request.job_id,
+            "project_title": project.get("title"), "render_filename": filename,
+            "title": (clip_match or {}).get("title") or project.get("title") or "Clip AI Short",
+            "social_caption": (clip_match or {}).get("social_caption") or "",
+            "start": request.start, "end": request.end, "transcript_revision": transcript_revision,
+        }
+        try:
+            (clips_dir / f"{Path(filename).stem}.metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
 
     media_url = f"/media/{request.job_id}/{filename}"
     return RenderClipResponse(

@@ -306,3 +306,107 @@ def _run_render(
         except OSError:
             pass
         raise
+
+
+def probe_media(media_path: str) -> dict:
+    """Detailed media preflight used by v21 reliability checks."""
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        raise RuntimeError("FFprobe was not found. Install FFmpeg and make sure 'ffprobe -version' works in Command Prompt.")
+    source = Path(media_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Media file not found: {source}")
+    command = [
+        ffprobe, "-v", "error", "-show_format", "-show_streams", "-of", "json", str(source)
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or "FFprobe could not inspect this video.").strip()[-2000:])
+    payload = json.loads(completed.stdout or "{}")
+    streams = payload.get("streams") or []
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audios = [s for s in streams if s.get("codec_type") == "audio"]
+    fmt = payload.get("format") or {}
+
+    def rate(value):
+        try:
+            a, b = str(value or "0/1").split("/", 1)
+            return float(a) / float(b) if float(b) else 0.0
+        except Exception:
+            return 0.0
+
+    duration = 0.0
+    try:
+        duration = float(fmt.get("duration") or (video or {}).get("duration") or 0)
+    except Exception:
+        pass
+    rotation = 0
+    if video:
+        tags = video.get("tags") or {}
+        try:
+            rotation = int(tags.get("rotate") or 0)
+        except Exception:
+            rotation = 0
+        for side in video.get("side_data_list") or []:
+            if "rotation" in side:
+                try:
+                    rotation = int(side["rotation"])
+                except Exception:
+                    pass
+    return {
+        "duration": max(0.0, duration),
+        "size_bytes": source.stat().st_size,
+        "container": str(fmt.get("format_name") or ""),
+        "has_video": video is not None,
+        "has_audio": bool(audios),
+        "audio_streams": len(audios),
+        "video_codec": video.get("codec_name") if video else None,
+        "audio_codec": audios[0].get("codec_name") if audios else None,
+        "width": int(video.get("width") or 0) if video else 0,
+        "height": int(video.get("height") or 0) if video else 0,
+        "fps": rate((video or {}).get("avg_frame_rate") or (video or {}).get("r_frame_rate")),
+        "rotation": rotation,
+        "pix_fmt": video.get("pix_fmt") if video else None,
+    }
+
+
+def should_normalize_media(info: dict, source_path: str) -> tuple[bool, list[str]]:
+    reasons: list[str] = []
+    suffix = Path(source_path).suffix.lower()
+    if suffix not in {".mp4", ".mov", ".m4v"}:
+        reasons.append("container")
+    if info.get("video_codec") not in {"h264", "hevc", "h265"}:
+        reasons.append("video codec")
+    if info.get("audio_codec") not in {"aac", "mp3", "opus"}:
+        reasons.append("audio codec")
+    fps = float(info.get("fps") or 0)
+    if fps and (fps < 20 or fps > 61):
+        reasons.append("frame rate")
+    if int(info.get("rotation") or 0) % 360:
+        reasons.append("rotation metadata")
+    return bool(reasons), reasons
+
+
+def normalize_media(
+    media_path: str,
+    output_path: str,
+    *,
+    cancel_event: threading.Event | None = None,
+    preset: str = "veryfast",
+) -> str:
+    """Create a stable H.264/AAC CFR working copy for unusual source media."""
+    require_ffmpeg()
+    source = Path(media_path)
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(source),
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", "fps=30",
+        "-c:v", "libx264", "-preset", preset, "-crf", "20", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
+        "-movflags", "+faststart", str(target),
+    ]
+    _run_render(command, target, "normalize the source video", cancel_event=cancel_event)
+    return str(target)

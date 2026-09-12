@@ -14,6 +14,8 @@ type ProjectSummary = {
   clip_count: number;
   render_count: number;
   storage_bytes: number;
+  status?: string;
+  processing_profile?: string;
 };
 
 function humanBytes(bytes: number) {
@@ -31,6 +33,9 @@ export default function ProjectsPage() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [resuming, setResuming] = useState<string | null>(null);
   const workerUrl = process.env.NEXT_PUBLIC_WORKER_URL || "http://127.0.0.1:8000";
 
   async function refresh() {
@@ -62,6 +67,24 @@ export default function ProjectsPage() {
     }
   }
 
+  async function resumeProject(project: ProjectSummary) {
+    setResuming(project.job_id); setError("");
+    try {
+      const res = await fetch(`${workerUrl}/projects/${project.job_id}/resume`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not resume project");
+      window.location.href = `/?project=${project.job_id}`;
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not resume project"); }
+    finally { setResuming(null); }
+  }
+
+  const visibleProjects = projects.filter((project) => {
+    const matchesQuery = !query.trim() || `${project.title} ${project.author_name || ""}`.toLowerCase().includes(query.trim().toLowerCase());
+    const status = project.status || "ready";
+    const matchesFilter = filter === "all" || (filter === "ready" ? status === "ready" : (filter === "needs-attention" ? status !== "ready" : project.source_type === filter));
+    return matchesQuery && matchesFilter;
+  });
+
   return (
     <div className="shell">
       <nav className="nav">
@@ -70,7 +93,7 @@ export default function ProjectsPage() {
           <a className="navLink activeNav" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v20.1 · beta</div>
+          <div className="badge">v21 · long-term beta</div>
         </div>
       </nav>
 
@@ -85,6 +108,18 @@ export default function ProjectsPage() {
         </section>
 
         {error && <div className="error">{error}</div>}
+        {!loading && projects.length > 0 && (
+          <div className="projectToolbar">
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search projects…" aria-label="Search projects" />
+            <select value={filter} onChange={(e) => setFilter(e.target.value)} aria-label="Filter projects">
+              <option value="all">All projects</option>
+              <option value="ready">Ready</option>
+              <option value="needs-attention">Needs attention / resumable</option>
+              <option value="upload">Uploads</option>
+              <option value="youtube">YouTube</option>
+            </select>
+          </div>
+        )}
         {loading ? (
           <div className="projectsEmpty">Loading projects…</div>
         ) : projects.length === 0 ? (
@@ -95,7 +130,7 @@ export default function ProjectsPage() {
           </div>
         ) : (
           <div className="projectsGrid">
-            {projects.map((project) => (
+            {visibleProjects.map((project) => (
               <article className="projectCard" key={project.job_id}>
                 <div className="projectThumb">
                   {project.thumbnail_url ? (
@@ -106,16 +141,18 @@ export default function ProjectsPage() {
                   <span>{project.source_type === "youtube" ? "YouTube" : "Upload"}</span>
                 </div>
                 <div className="projectBody">
-                  <h2>{project.title}</h2>
+                  <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"flex-start"}}><h2>{project.title}</h2><span className={`projectStatus ${project.status || "ready"}`}>{project.status || "ready"}</span></div>
                   {project.author_name && <p className="projectAuthor">{project.author_name}</p>}
                   <p className="projectDate">Updated {dateLabel(project.updated_at)}</p>
                   <div className="projectStats">
                     <span>{project.clip_count} suggestions</span>
                     <span>{project.render_count} renders</span>
                     <span>{humanBytes(project.storage_bytes)}</span>
+                    <span>{project.processing_profile || "balanced"}</span>
                   </div>
                   <div className="projectActions">
                     <a className="projectOpen" href={`/?project=${project.job_id}`}>Open project</a>
+                    {(project.status && project.status !== "ready") && <button className="resumeButton" onClick={() => resumeProject(project)} disabled={resuming === project.job_id}>{resuming === project.job_id ? "Resuming…" : "Resume"}</button>}
                     <button onClick={() => removeProject(project)}>Delete</button>
                   </div>
                 </div>

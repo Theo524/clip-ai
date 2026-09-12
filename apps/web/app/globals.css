@@ -915,7 +915,7 @@ h1 { font-size: clamp(44px, 7vw, 76px); line-height: .98; letter-spacing: -.055e
 }
 
 /* --------------------------------------------------------------------------
-   Clip Relay visual language port · visual-only refresh
+   Clip AI dark-glass visual refresh
    Keeps Clip AI's v20.1 workflow/behaviour intact while bringing the web UI
    closer to the desktop companion: glassy dark surfaces, violet/cyan depth,
    softer hierarchy, compact controls and clearer status states.
@@ -1402,3 +1402,11 @@ h1 {
     border-radius: 16px;
   }
 }
+
+/* v21 long-term beta controls */
+.profilePicker{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 16px;margin:4px 0 12px;border:1px solid rgba(255,255,255,.08);border-radius:14px;background:rgba(255,255,255,.035)}
+.profilePicker span{display:flex;flex-direction:column;gap:3px}.profilePicker strong{font-size:13px}.profilePicker small{color:var(--muted,#9da4b7);font-size:11px}.profilePicker select{min-width:170px;background:#111425;color:#fff;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:9px 10px}
+.trimGrid{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;margin-top:12px}.trimGrid label,.captionCorrection label{display:flex;flex-direction:column;gap:6px;font-size:11px;color:#aeb4c7}.trimGrid input,.captionCorrection textarea{width:100%;background:#0d1020;color:#f7f8fb;border:1px solid rgba(255,255,255,.11);border-radius:10px;padding:10px;outline:none}.captionCorrection{margin-top:14px}.captionCorrection textarea{resize:vertical;line-height:1.45}.captionCorrectionActions{display:flex;align-items:center;gap:10px;margin-top:9px}.captionCorrectionActions small{color:#8e95aa;line-height:1.35}.coverPicker{margin-top:16px;padding:14px;border:1px solid rgba(255,255,255,.08);border-radius:14px;background:rgba(255,255,255,.025)}.coverPicker input[type=range]{width:100%;margin:9px 0}.exportButtonStack{display:flex;flex-direction:column;align-items:flex-end;gap:7px}.packageDownload{font-size:11px;color:#b7c1ff;text-decoration:none}.packageDownload:hover{text-decoration:underline}.subtitleLinks{display:flex;gap:8px;font-size:10px}.subtitleLinks a{color:#9aa6c7;text-decoration:none;border:1px solid rgba(255,255,255,.09);padding:3px 7px;border-radius:999px}.subtitleLinks a:hover{color:#fff;border-color:rgba(255,255,255,.2)}
+.projectToolbar{display:flex;gap:10px;align-items:center;margin:6px 0 22px}.projectToolbar input,.projectToolbar select{background:rgba(13,16,32,.82);border:1px solid rgba(255,255,255,.1);color:#fff;border-radius:12px;padding:11px 13px}.projectToolbar input{flex:1;min-width:200px}.projectStatus{display:inline-flex;align-items:center;gap:6px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:4px 7px;border-radius:999px;background:rgba(255,255,255,.055);color:#aeb4c7}.projectStatus.interrupted,.projectStatus.cancelled{color:#ffd39b;background:rgba(255,170,65,.09)}.resumeButton{border:1px solid rgba(139,92,246,.32)!important;background:rgba(139,92,246,.1)!important;color:#ddd6fe!important}
+.betaTools .diagnosticLink{display:inline-flex;align-items:center;justify-content:center;text-decoration:none}
+@media(max-width:720px){.profilePicker{align-items:flex-start;flex-direction:column}.profilePicker select{width:100%}.trimGrid{grid-template-columns:1fr 1fr}.trimGrid button{grid-column:1/-1}.exportButtonStack{align-items:stretch}.projectToolbar{flex-direction:column;align-items:stretch}}

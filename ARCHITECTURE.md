@@ -1,69 +1,89 @@
-# Clip AI v20.1 architecture
+# Clip AI v21 architecture
 
-v20.1 keeps the v19.1/v20 creative pipeline and adds a reliability/cache layer around transcription plus a simpler default UI.
+v21 keeps the existing creative pipeline but adds durable local task/project state and an editing/export layer around it.
 
 ```text
 Next.js web app
-  ├─ Your video / authorised YouTube project
-  ├─ Best 3 compact results
-  ├─ More suggestions & editing options (collapsed)
-  ├─ task progress / cancel
-  ├─ Projects
-  └─ System
-        ↓
-FastAPI worker 20.1.0-beta.1
-        ↓
-ffprobe audio check
-        ↓
-fast content fingerprint
-        ├─ project transcript exists → reuse
-        ├─ transcript cache hit → reuse
-        └─ cache miss
+  ├─ upload / authorised YouTube project
+  ├─ processing profile
+  ├─ task progress + cancel/recovery
+  ├─ Best 3 + clip editor
+  ├─ caption correction + cover selection
+  ├─ Projects search/filter/resume
+  └─ System + redacted diagnostics
              ↓
-        FFmpeg 16 kHz mono audio extraction
+FastAPI worker 21.0.0-beta.1
              ↓
-        long source? up-to-10-min chunks
+media preflight + disk guard
              ↓
-        faster-whisper tiny.en, VAD on
-             ↓ empty chunk
-        automatic retry with VAD off
+optional media normalization
              ↓
-        word-level transcript
+transcript checkpoint/cache
+  ├─ project transcript → reuse
+  ├─ local cache → reuse
+  └─ miss → FFmpeg audio chunks → faster-whisper
              ↓
-        persistent transcript cache
+ranking checkpoint/cache
              ↓
-local/OpenAI moment ranking
-        ↓
-copy/title generation
-        ↓
-saved project
-        ↓
-smart reframe + captions + FFmpeg render
+word transcript + ranked moments + copy
+             ↓
+atomic project.json (schema v21)
+             ↓
+smart reframe / active-speaker tracking / captions
+             ↓
+render cache + cover + SRT/VTT + metadata sidecar
+             ↓
+MP4 download or complete export ZIP
 ```
 
-## Transcript cache
+## Persistent local state
 
-Cached transcripts live under:
+Project state lives under `WORK_DIR/<project-id>/project.json`. v21 adds a small task ledger at:
 
 ```text
-WORK_DIR/cache/transcripts/
+WORK_DIR/_state/tasks.json
 ```
 
-The cache key uses a fast fingerprint of file size + the first/last 1 MiB plus the transcription strategy/model. It is intentionally a local-development performance cache rather than a security identity primitive.
+If the worker closes while a task is running, that task is converted to a recoverable interrupted state on the next start. Resume re-enters the normal analysis pipeline and relies on saved checkpoints rather than blindly discarding completed work.
 
-## Long-video behavior
+## Project migrations
 
-Sources at least 30 minutes long are split into at most 10-minute transcription chunks even if `AUDIO_CHUNK_SECONDS` is larger. The model remains loaded in memory, chunks are processed sequentially to stay safe on an 8 GB development PC, and the worker estimates remaining time after it has measured one chunk.
+`project.json` uses schema version 21. Older local projects are migrated additively when loaded. New fields receive safe defaults; saved source/transcripts/clips/renders remain intact. Writes use a temporary file and replace pattern to reduce partial JSON corruption after a crash.
 
-Parallel transcription is deliberately avoided on the current local build because multiple concurrent decodes would compete for RAM/CPU and can make an 8 GB machine less stable rather than faster.
+## Media normalization
 
-## Empty-transcript recovery
+FFprobe is used before transcription to inspect streams, codecs, dimensions, frame rate and rotation metadata. Media that is likely to cause inconsistent downstream behavior can be converted once to `normalized.mp4` using H.264 video and AAC audio. The original source is retained.
 
-1. Check that the source has an audio stream with ffprobe.
-2. Transcribe each chunk with VAD enabled.
-3. If a chunk produces zero segments, retry the same chunk with VAD disabled.
-4. Only fail after both attempts produce no English speech.
+## Processing profiles
 
-## Deployment boundary
+Profiles centralize resource choices rather than exposing implementation settings to normal users:
 
-The local worker still stores project media on disk and task state in memory. A hosted release should move source/render media to object storage, projects/users to a database, jobs to a durable queue, and long-video transcription/rendering to scalable cloud workers.
+| Profile | Audio chunks | CPU threads | Intended use |
+| --- | ---: | ---: | --- |
+| Low memory | 300s | 2 | constrained/RAM-sensitive machine |
+| Balanced | 600s | 4 | default local beta |
+| Fast | 1200s | 6 | machine has spare CPU/RAM |
+
+Actual render/transcription behavior still respects the existing local model/backend settings.
+
+## Checkpoints and caches
+
+Clip AI can reuse:
+- existing project transcript;
+- content-keyed transcript cache;
+- saved ranked clips;
+- existing rendered files/reframe data when exact inputs match.
+
+This is especially important for long videos: a later render/edit failure should not force a completed transcription to start over.
+
+## Generic export boundary
+
+The complete export package and `.metadata.json` sidecar are deliberately generic. They contain finished media metadata but do not reference or require any private companion application. This keeps the public Clip AI product standalone.
+
+## Security/support boundary
+
+The diagnostics endpoint produces a ZIP of useful environment/project/task information while excluding API keys, transcript contents and obvious secrets. It is a support artifact, not telemetry; nothing is uploaded automatically.
+
+## Future hosted deployment
+
+A hosted public release should replace local disk/task state with authenticated accounts, object storage, a database and a durable queue; processing should run on isolated scalable workers. v21's project/checkpoint boundaries are designed to make that migration easier later.

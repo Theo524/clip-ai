@@ -83,6 +83,7 @@ export default function StatusPage() {
   }
 
   function replayOnboarding() {
+    window.localStorage.removeItem("clip-ai-v21-onboarding");
     window.localStorage.removeItem("clip-ai-v20-onboarding");
     window.location.href = "/";
   }
@@ -95,7 +96,7 @@ export default function StatusPage() {
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink activeNav" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v20.1 · beta</div>
+          <div className="badge">v21 · long-term beta</div>
         </div>
       </nav>
 
@@ -150,13 +151,14 @@ export default function StatusPage() {
               <div className="betaToolActions">
                 <button onClick={cleanTemporaryFiles} disabled={cleaning}>{cleaning ? "Cleaning…" : "Clean temporary files"}</button>
                 <button onClick={replayOnboarding}>Replay welcome tour</button>
+                <a className="diagnosticLink" href={`${workerUrl}/system/diagnostics`}>Export redacted diagnostics</a>
               </div>
               {cleanupMessage && <p className="cleanupMessage">{cleanupMessage}</p>}
             </section>
 
             <section className="betaNotice">
               <strong>What “beta” means here</strong>
-              <p>This v20.1 build is a stable local beta: the complete editing pipeline runs on your PC. Accounts, hosted cloud workers, shared projects and payments are deployment features, not requirements for testing the product locally.</p>
+              <p>This v21 long-term beta adds restart recovery, checkpointed processing, safer media normalization and export tooling while keeping the complete editing pipeline on your PC. Accounts, hosted cloud workers, shared projects and payments are deployment features, not requirements for testing the product locally.</p>
               <code>{data.work_dir}</code>
             </section>
           </>

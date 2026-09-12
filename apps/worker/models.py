@@ -7,6 +7,7 @@ class AnalyzeRequest(BaseModel):
     source_url: HttpUrl
     local_media_path: str | None = None
     max_clips: int = Field(default=6, ge=1, le=12)
+    processing_profile: Literal["low-memory", "balanced", "fast"] = "balanced"
 
 
 class YouTubeInfoResponse(BaseModel):
@@ -75,6 +76,7 @@ class RenderClipRequest(BaseModel):
     frame_size: Literal["auto", "compact", "balanced", "immersive"] = "auto"
     caption_offset_ms: int = Field(default=0, ge=-1000, le=1000)
     platform: Literal["auto", "shorts", "tiktok", "reels"] = "auto"
+    cover_offset_seconds: float | None = Field(default=None, ge=0, le=180)
 
 
 class RenderClipResponse(BaseModel):
@@ -127,6 +129,8 @@ class ProjectSummary(BaseModel):
     clip_count: int = 0
     render_count: int = 0
     storage_bytes: int = 0
+    status: str = "ready"
+    processing_profile: str = "balanced"
 
 
 class ProjectDetail(ProjectSummary):
@@ -152,6 +156,32 @@ class TaskStatusResponse(BaseModel):
     error: str | None = None
     created_at: str
     updated_at: str
+    recoverable: bool = False
+
+
+
+class ClipTimingUpdateRequest(BaseModel):
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+
+
+class TranscriptEditRequest(BaseModel):
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    text: str = Field(max_length=5000)
+
+
+class TranscriptRangeResponse(BaseModel):
+    start: float
+    end: float
+    text: str
+    segment_count: int
+
+
+class CoverRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=240)
+    at_seconds: float = Field(ge=0, le=180)
+
 
 class SystemCheck(BaseModel):
     id: str
