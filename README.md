@@ -1,4 +1,19 @@
-# Clip AI v20.1 Beta Reliability Patch
+# Clip AI v20.1 · Clip Relay Visual Refresh
+
+This package keeps the **v20.1 processing pipeline unchanged** and ports the visual language of Clip Relay onto the Clip AI web app. It is intentionally a design-only refresh so transcription, ranking, rendering, projects and system checks keep the same behaviour.
+
+## Visual refresh
+
+- Clip Relay-inspired dark glass surfaces and softer depth
+- Violet-to-cyan ambient gradients and matching brand mark
+- More compact navigation, status chips and controls
+- Refined upload surface, project cards, Best 3 results and system screen
+- Unified buttons, borders, hover states and scrollbars
+- Responsive mobile treatment without changing the workflow
+
+---
+
+## Original v20.1 Beta Reliability Patch
 
 Clip AI turns long English-language videos into ranked, reframed, captioned, ready-to-post vertical clips. v20.1 is a beta reliability/UX patch on top of the v20 local release candidate.
 
