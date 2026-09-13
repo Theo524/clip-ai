@@ -1,5 +1,17 @@
 # Changelog
 
+## 22.0.0-M3 · Titles & Social Metadata
+
+- Replaces raw transcript-line titles with a context-aware local copy pass that favors complete, central moments and cleaner headline phrasing.
+- Uses each clip plus its bounded local scene context from M2; compilation metadata never reads across a detected scene boundary.
+- Adds editable descriptions and up to seven useful hashtags/tags per clip while preserving `social_caption` as a combined description + tags field for generic publishing tools.
+- Uses the optional show/program/subject hint as trusted context for title grounding and tags. Clip AI does not invent character/person names that were not supplied or present in source context.
+- Adds content-type and moment-type tags such as Anime, Documentary, Reveal, Podcast and Gameplay, plus a small number of grounded topic tags.
+- Export packages and per-render `.metadata.json` sidecars now include `description` and `hashtags` in addition to the legacy `social_caption`.
+- Results UI now exposes **Title, description & tags**, separate copy buttons, and a combined post bundle.
+- Keeps M2.1 memory-safe Whisper fallback, scene-local ranking, flexible durations, Best 3 diversity and the v21 render/recovery pipeline unchanged.
+- Backend regression suite passes 68 tests. Frontend TSX syntax validation passes in this workspace; run the full Next.js build on Windows after installation.
+
 ## 22.0.0-M2.1 · Memory-safe transcription patch
 
 - Fixes the Windows/NumPy `Unable to allocate ... complex128` failure seen during faster-whisper feature extraction on memory-constrained PCs.

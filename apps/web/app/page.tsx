@@ -10,6 +10,8 @@ type Clip = {
   score: number;
   reasons: string[];
   social_caption?: string | null;
+  description?: string | null;
+  hashtags?: string[];
   score_breakdown?: Record<string, number>;
   editor_note?: string | null;
   context?: {
@@ -489,6 +491,24 @@ export default function Home() {
     setCopySaved(null);
   }
 
+  function composeSocialCaption(description: string, hashtags: string[]) {
+    const cleanDescription = description.trim();
+    const tags = hashtags.filter(Boolean).join(" ").trim();
+    return [cleanDescription, tags].filter(Boolean).join("\n\n");
+  }
+
+  function parseHashtags(value: string) {
+    const out: string[] = [];
+    for (const raw of value.split(/[\s,]+/)) {
+      const clean = raw.replace(/^#/, "").replace(/[^A-Za-z0-9]/g, "").slice(0, 36);
+      if (!clean) continue;
+      const tag = `#${clean}`;
+      if (!out.some((item) => item.toLowerCase() === tag.toLowerCase())) out.push(tag);
+      if (out.length >= 7) break;
+    }
+    return out;
+  }
+
   async function regenerateCopy(index: number) {
     if (!result?.job_id) return;
     setError("");
@@ -502,7 +522,7 @@ export default function Home() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Could not regenerate title");
-      updateClipLocal(index, { title: data.title, social_caption: data.social_caption });
+      updateClipLocal(index, { title: data.title, description: data.description, hashtags: data.hashtags || [], social_caption: data.social_caption });
       setCopySaved(index);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not regenerate clip copy");
@@ -522,11 +542,16 @@ export default function Home() {
       const res = await fetch(`${workerUrl}/projects/${result.job_id}/clips/${index}/copy`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ title: clip.title, social_caption: clip.social_caption || "" }),
+        body: JSON.stringify({
+          title: clip.title,
+          description: clip.description || "",
+          hashtags: clip.hashtags || [],
+          social_caption: clip.social_caption || "",
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Could not save title");
-      updateClipLocal(index, { title: data.title, social_caption: data.social_caption });
+      updateClipLocal(index, { title: data.title, description: data.description, hashtags: data.hashtags || [], social_caption: data.social_caption });
       setCopySaved(index);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not save clip copy");
@@ -704,7 +729,7 @@ export default function Home() {
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
-          <div className="badge">v22 · M2.1 memory-safe</div>
+          <div className="badge">v22 · M3 social metadata</div>
         </div>
       </nav>
 
@@ -1089,8 +1114,8 @@ export default function Home() {
                     {!result.mock && result.job_id && (
                       <details className="copyPanel">
                         <summary>
-                          <span>Title & post caption</span>
-                          <small>Generated from the dialogue · editable</small>
+                          <span>Title, description & tags</span>
+                          <small>Grounded in this scene · editable</small>
                         </summary>
                         <div className="copyBody">
                           <label className="copyField">
@@ -1103,13 +1128,31 @@ export default function Home() {
                             />
                           </label>
                           <label className="copyField">
-                            <span>Social post caption</span>
+                            <span>Description</span>
                             <textarea
-                              value={clip.social_caption || ""}
+                              value={clip.description || (clip.social_caption || "").split("\n\n")[0] || ""}
                               maxLength={500}
                               rows={3}
-                              placeholder="Clip AI can generate a short post caption from this dialogue."
-                              onChange={(e) => updateClipLocal(index, { social_caption: e.target.value })}
+                              placeholder="Clip AI summarizes what actually happens in this moment."
+                              onChange={(e) => {
+                                const description = e.target.value;
+                                const hashtags = clip.hashtags || [];
+                                updateClipLocal(index, { description, social_caption: composeSocialCaption(description, hashtags) });
+                              }}
+                              disabled={copyBusy === index}
+                            />
+                          </label>
+                          <label className="copyField">
+                            <span>Tags <small>up to 7</small></span>
+                            <input
+                              value={(clip.hashtags || []).join(" ")}
+                              maxLength={220}
+                              placeholder="#AttackOnTitan #Anime #Reveal #Shorts"
+                              onChange={(e) => {
+                                const hashtags = parseHashtags(e.target.value);
+                                const description = clip.description || (clip.social_caption || "").split("\n\n")[0] || "";
+                                updateClipLocal(index, { hashtags, social_caption: composeSocialCaption(description, hashtags) });
+                              }}
                               disabled={copyBusy === index}
                             />
                           </label>
@@ -1134,7 +1177,7 @@ export default function Home() {
                               {copySaved === index ? "Saved ✓" : "Save edits"}
                             </button>
                           </div>
-                          <p className="copyNote">Titles and post captions are based only on the words spoken in this selected moment. You can rewrite either before exporting.</p>
+                          <p className="copyNote">M3 uses the selected moment plus nearby scene context. Show/program names come only from your subject hint or text already present in the project; Clip AI does not invent names.</p>
                         </div>
                       </details>
                     )}
@@ -1320,15 +1363,29 @@ export default function Home() {
 
                                 <div className="readyField">
                                   <div>
-                                    <span>Post caption</span>
-                                    <p className="postCaptionText">{clip.social_caption || "No post caption yet. Open Title & post caption to generate one."}</p>
+                                    <span>Description</span>
+                                    <p className="postCaptionText">{clip.description || (clip.social_caption || "").split("\n\n")[0] || "No description yet. Open Title, description & tags to generate one."}</p>
                                   </div>
                                   <button
                                     type="button"
-                                    disabled={!clip.social_caption}
-                                    onClick={() => copyToClipboard(`${index}-caption`, clip.social_caption || "")}
+                                    disabled={!clip.description && !clip.social_caption}
+                                    onClick={() => copyToClipboard(`${index}-description`, clip.description || (clip.social_caption || "").split("\n\n")[0] || "")}
                                   >
-                                    {copied === `${index}-caption` ? "Copied ✓" : "Copy"}
+                                    {copied === `${index}-description` ? "Copied ✓" : "Copy"}
+                                  </button>
+                                </div>
+
+                                <div className="readyField">
+                                  <div>
+                                    <span>Tags</span>
+                                    <p className="postCaptionText">{(clip.hashtags || []).join(" ") || "No tags generated yet."}</p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    disabled={!clip.hashtags?.length}
+                                    onClick={() => copyToClipboard(`${index}-tags`, (clip.hashtags || []).join(" "))}
+                                  >
+                                    {copied === `${index}-tags` ? "Copied ✓" : "Copy"}
                                   </button>
                                 </div>
 
@@ -1338,7 +1395,7 @@ export default function Home() {
                                   disabled={!clip.social_caption}
                                   onClick={() => copyToClipboard(`${index}-bundle`, `${clip.title}\n\n${clip.social_caption || ""}`)}
                                 >
-                                  {copied === `${index}-bundle` ? "Title + caption copied ✓" : "Copy title + caption"}
+                                  {copied === `${index}-bundle` ? "Post bundle copied ✓" : "Copy title + description + tags"}
                                 </button>
                               </div>
                             </div>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Literal
 
@@ -10,7 +11,7 @@ TitleStyle = Literal["auto", "viral", "clean", "cinematic"]
 
 FILLER_STARTS = (
     "um ", "uh ", "erm ", "hmm ", "well ", "yeah ", "yes ", "okay ", "ok ",
-    "so ", "and ", "but ", "like ", "you know ", "i mean ",
+    "so ", "and ", "but ", "like ", "you know ", "i mean ", "basically ",
 )
 
 HIGH_INTEREST = (
@@ -18,22 +19,59 @@ HIGH_INTEREST = (
     "money", "million", "billion", "failed", "failure", "risk", "crazy",
     "shocked", "surprised", "changed", "important", "dangerous", "love", "hate",
     "regret", "realised", "realized", "learned", "lost", "won", "almost",
+    "revealed", "discovered", "found out", "escaped", "saved", "betrayed",
 )
 
 PAYOFF_CUES = (
     "that's why", "that is why", "the lesson", "the point is", "turns out",
     "in the end", "the answer", "which means", "so now", "i learned", "i realised",
-    "i realized", "eventually",
+    "i realized", "eventually", "finally", "actually",
 )
 
-CONTRAST_CUES = (" but ", " however ", " until ", " instead ", " turns out ", " except ")
+CONTRAST_CUES = (" but ", " however ", " until ", " instead ", " turns out ", " except ", " yet ")
+
+STOPWORDS = {
+    "about", "after", "again", "against", "almost", "also", "always", "because", "before", "being",
+    "between", "could", "didnt", "doesnt", "doing", "dont", "even", "every", "from", "going", "have",
+    "having", "here", "into", "just", "like", "maybe", "more", "most", "much", "really", "right", "said",
+    "same", "should", "something", "still", "than", "that", "their", "them", "then", "there", "these", "they",
+    "thing", "think", "this", "those", "through", "very", "want", "wasnt", "what", "when", "where", "which",
+    "while", "with", "would", "youre", "your", "actually", "basically", "literally", "people", "person", "things",
+    "everyone", "someone", "anything", "everything", "ready", "happened", "cannot", "couldnt", "wouldnt", "thought",
+    "told", "made", "first", "next", "quickly", "slowly", "started", "stopped", "began", "came", "went", "getting",
+    "biggest", "hiding", "missed", "believe", "matter", "spent", "spending", "returned", "protect", "protected",
+    "that's", "thats",
+}
+
+CONTENT_TAGS = {
+    "podcast": ("Podcast", "PodcastClips"),
+    "anime": ("Anime", "AnimeClips"),
+    "film-tv": ("Film", "TVClips"),
+    "documentary": ("Documentary",),
+    "meme-comedy": ("Comedy", "FunnyClips"),
+    "gameplay": ("Gaming", "Gameplay"),
+    "other": ("Shorts",),
+}
+
+MOMENT_TAGS = {
+    "funny": "Funny",
+    "emotional": "Emotional",
+    "action": "Action",
+    "reveal": "Reveal",
+    "argument": "Debate",
+    "reaction": "Reaction",
+    "informative": "LearnSomething",
+}
 
 
 @dataclass(frozen=True)
 class GeneratedCopy:
     title: str
+    description: str
+    hashtags: tuple[str, ...]
     social_caption: str
     style: TitleStyle
+    grounded_terms: tuple[str, ...] = ()
 
 
 def _clean(text: str) -> str:
@@ -53,7 +91,7 @@ def _sentences(text: str) -> list[str]:
     cleaned = _clean(text)
     if not cleaned:
         return []
-    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    parts = re.split(r"(?<=[.!?…])\s+", cleaned)
     return [part.strip(" \t\n\r\"“”") for part in parts if part.strip()]
 
 
@@ -69,6 +107,7 @@ def _strip_filler_start(text: str) -> str:
                 lowered = cleaned.lower()
                 changed = True
                 break
+    cleaned = re.sub(r"^(?:i think|i guess|i feel like|we think|you see)\s+", "", cleaned, flags=re.I)
     return cleaned
 
 
@@ -78,67 +117,82 @@ def _truncate_words(text: str, max_words: int, max_chars: int) -> str:
     if len(words) > max_words:
         cleaned = " ".join(words[:max_words]).rstrip(" ,.!?:;–—")
     if len(cleaned) > max_chars:
-        cleaned = cleaned[:max_chars].rsplit(" ", 1)[0].rstrip(" ,.!?:;–—")
+        head = cleaned[:max_chars]
+        cleaned = head.rsplit(" ", 1)[0].rstrip(" ,.!?:;–—") if " " in head else head.rstrip(" ,.!?:;–—")
     return cleaned
 
 
-def _sentence_score(sentence: str, index: int, total: int) -> float:
+def _tokens(text: str) -> list[str]:
+    return [w for w in re.findall(r"[a-z0-9']+", text.lower()) if len(w) >= 4 and w not in STOPWORDS]
+
+
+def _topic_counts(text: str) -> Counter[str]:
+    return Counter(_tokens(text))
+
+
+def _sentence_score(sentence: str, index: int, total: int, topic_counts: Counter[str] | None = None) -> float:
     lower = sentence.lower()
     score = 0.0
     if index == 0:
-        score += 4
+        score += 3
     if "?" in sentence:
-        score += 6
-    if any(term in lower for term in HIGH_INTEREST):
-        score += 6
-    if re.search(r"\b\d+(?:\.\d+)?%?\b|[$£€]\s?\d", sentence):
         score += 4
+    if any(term in lower for term in HIGH_INTEREST):
+        score += 8
+    if re.search(r"\b\d+(?:\.\d+)?%?\b|[$£€]\s?\d", sentence):
+        score += 3
     if any(cue in lower for cue in PAYOFF_CUES):
         score += 5
     if any(cue in f" {lower} " for cue in CONTRAST_CUES):
         score += 3
     word_count = len(sentence.split())
-    if 5 <= word_count <= 16:
-        score += 4
-    elif word_count > 24:
-        score -= 2
+    if 6 <= word_count <= 20:
+        score += 5
+    elif word_count > 30:
+        score -= 4
     if index == total - 1 and total > 1:
         score += 1
+    if topic_counts:
+        topical = sum(min(3, topic_counts[token]) for token in set(_tokens(sentence)))
+        score += min(7.0, topical * 0.55)
+    # A title based on a dangling fragment is usually worse than a calmer complete thought.
+    if re.search(r"\b(?:and|but|because|so|then|which|that)\s*$", lower.rstrip(" .!?")):
+        score -= 8
     return score
 
-def _core_sentence(text: str) -> str:
+
+def _core_sentence(text: str, local_context: str = "") -> str:
     sentences = _sentences(text)
     if not sentences:
         return _strip_filler_start(text)
+    topic_counts = _topic_counts(f"{text} {local_context}")
     ranked = sorted(
         enumerate(sentences),
-        key=lambda item: (_sentence_score(item[1], item[0], len(sentences)), -item[0]),
+        key=lambda item: (_sentence_score(item[1], item[0], len(sentences), topic_counts), -item[0]),
         reverse=True,
     )
     return _strip_filler_start(ranked[0][1])
 
 
-def _supporting_sentence(text: str, core: str) -> str:
+def _supporting_sentence(text: str, core: str, local_context: str = "") -> str:
     sentences = _sentences(text)
     if len(sentences) < 2:
         return ""
     candidates = [sentence for sentence in sentences if _clean(sentence).lower() != _clean(core).lower()]
     if not candidates:
         return ""
-    # Prefer a payoff / consequence sentence for the post caption rather than
-    # repeating the same hook that became the title.
-    for sentence in reversed(candidates):
-        lower = sentence.lower()
-        if any(cue in lower for cue in PAYOFF_CUES) or any(cue in f" {lower} " for cue in CONTRAST_CUES):
-            return _strip_filler_start(sentence)
-    return _strip_filler_start(candidates[-1])
+    topic_counts = _topic_counts(f"{text} {local_context}")
+    ranked = sorted(
+        enumerate(candidates),
+        key=lambda item: (_sentence_score(item[1], item[0], len(candidates), topic_counts), item[0]),
+        reverse=True,
+    )
+    return _strip_filler_start(ranked[0][1])
 
 
 def _sentence_case(text: str) -> str:
     cleaned = _clean(text)
-    if not cleaned:
-        return cleaned
-    return cleaned[0].upper() + cleaned[1:]
+    return cleaned[:1].upper() + cleaned[1:] if cleaned else cleaned
 
 
 def _smart_title_case(text: str) -> str:
@@ -149,20 +203,26 @@ def _smart_title_case(text: str) -> str:
         plain = word.strip(".,!?;:")
         if plain.isupper() and len(plain) <= 5:
             out.append(word)
-            continue
-        if i > 0 and plain.lower() in small:
+        elif i > 0 and plain.lower() in small:
             out.append(word.lower())
         else:
             out.append(word[:1].upper() + word[1:])
     return " ".join(out)
 
 
-def _make_title(text: str, style: TitleStyle) -> str:
-    core = _core_sentence(text)
-    core = re.sub(r"^(here(?:'s| is)\s+)(?:the\s+)?", "", core, flags=re.I)
+def _subject_label(subject_hint: str | None) -> str:
+    clean = _clean(subject_hint or "")
+    if not clean:
+        return ""
+    # A comma often separates the show/program from episode notes supplied by the user.
+    return clean.split(",", 1)[0].strip()[:64]
 
-    # Dialogue-like statements become more title-like without inventing new facts.
-    replacements = (
+
+def _headline_from_sentence(core: str) -> str:
+    headline = _strip_filler_start(core).strip(" \"“”'")
+    headline = re.sub(r"^(?:here(?:'s| is)\s+)(?:the\s+)?", "", headline, flags=re.I)
+
+    transformations = (
         (r"^the biggest mistake i (?:made|make) (?:was|is)\s+", "My Biggest Mistake: "),
         (r"^the biggest mistake (?:was|is)\s+", "The Biggest Mistake: "),
         (r"^the problem (?:was|is)\s+", "The Problem: "),
@@ -173,34 +233,52 @@ def _make_title(text: str, style: TitleStyle) -> str:
         (r"^i learned (?:that\s+)?", "What I Learned: "),
         (r"^i realised (?:that\s+)?", "What I Realised: "),
         (r"^i realized (?:that\s+)?", "What I Realized: "),
+        (r"^turns out(?: that)?\s+", "The Truth: "),
+        (r"^it turns out(?: that)?\s+", "The Truth: "),
     )
-    for pattern, replacement in replacements:
-        if re.search(pattern, core, flags=re.I):
-            core = re.sub(pattern, replacement, core, count=1, flags=re.I)
-            break
+    for pattern, replacement in transformations:
+        if re.search(pattern, headline, flags=re.I):
+            return re.sub(pattern, replacement, headline, count=1, flags=re.I)
 
-    if style == "cinematic":
-        title = _truncate_words(core, 7, 48)
-        return _sentence_case(title)
+    # "X is because Y" is usually more useful as a compact Why headline than raw dialogue.
+    because = re.match(r"^(.{8,70}?)\s+(?:is|was|happened)\s+because\s+(.+)$", headline, flags=re.I)
+    if because and len(because.group(1).split()) >= 3:
+        return f"Why {because.group(1).strip(' ,.-')}"
 
-    if style == "clean":
-        title = _truncate_words(core, 10, 62)
-        return _sentence_case(title)
+    when_clause = re.match(r"^(when\s+[^,]{10,64}),\s+.+$", headline, flags=re.I)
+    if when_clause and 4 <= len(when_clause.group(1).split()) <= 10:
+        return when_clause.group(1)
 
-    # Auto intentionally leans clean unless the dialogue itself contains a clear
-    # high-interest hook. Viral is punchier in casing, not more sensational in facts.
+    return headline
+
+
+def _make_title(text: str, style: TitleStyle, *, local_context: str = "", subject_hint: str | None = None,
+                content_type: str | None = None) -> str:
+    core = _core_sentence(text, local_context)
+    headline = _headline_from_sentence(core)
+    subject = _subject_label(subject_hint)
+
+    max_words, max_chars = (7, 52) if style == "cinematic" else (10, 66)
+    title = _truncate_words(headline, max_words, max_chars)
+
     effective = style
     if style == "auto":
         effective = "viral" if any(term in core.lower() for term in HIGH_INTEREST) or "?" in core else "clean"
 
-    title = _truncate_words(core, 9 if effective == "viral" else 10, 58)
     if effective == "viral":
-        title = title.rstrip(".")
-        if "?" not in title:
-            title = _smart_title_case(title)
+        title = _smart_title_case(title.rstrip(".")) if "?" not in title else _sentence_case(title)
     else:
         title = _sentence_case(title)
-    return title or "Strong moment"
+
+    # For programme-based material a short trusted subject hint makes an otherwise vague
+    # headline self-contained. We only use text explicitly supplied by the user.
+    vague_start = re.match(r"^(?:he|she|they|it|this|that|we|i)\b", title, flags=re.I)
+    if subject and content_type in {"anime", "film-tv", "documentary"} and (vague_start or len(title.split()) <= 6):
+        room = 72 - len(subject) - 3
+        if room >= 20 and subject.lower() not in title.lower():
+            title = f"{subject}: {_truncate_words(title, 8, room)}"
+
+    return title[:78].rstrip(" ,;:–—") or "Strong moment"
 
 
 def _ensure_terminal(text: str) -> str:
@@ -210,41 +288,136 @@ def _ensure_terminal(text: str) -> str:
     return cleaned
 
 
-def _make_social_caption(text: str, style: TitleStyle, title: str) -> str:
-    sentences = _sentences(text)
-    if not sentences:
-        return title
+def _similarity(left: str, right: str) -> float:
+    a, b = set(_tokens(left)), set(_tokens(right))
+    if not a or not b:
+        return 0.0
+    return len(a & b) / max(1, min(len(a), len(b)))
 
-    core = _core_sentence(text)
-    support = _supporting_sentence(text, core)
-    core_clean = _truncate_words(_strip_filler_start(core), 18, 120)
-    support_clean = _truncate_words(support, 18, 120) if support else ""
 
-    # Avoid making the social caption a copy/paste of the title. Use the next useful
-    # line from the dialogue as the payoff/context whenever possible.
-    title_words = set(re.findall(r"[a-z0-9']+", title.lower()))
-    core_words = set(re.findall(r"[a-z0-9']+", core_clean.lower()))
-    overlap = len(title_words & core_words) / max(1, min(len(title_words), len(core_words)))
-    first = support_clean if overlap > 0.72 and support_clean else core_clean
+def _make_description(text: str, title: str, style: TitleStyle, *, local_context: str = "") -> str:
+    core = _core_sentence(text, local_context)
+    support = _supporting_sentence(text, core, local_context)
+    candidates = [_strip_filler_start(core)]
+    if support:
+        candidates.append(_strip_filler_start(support))
+
+    # Prefer a sentence that adds information rather than just restating the headline.
+    ordered = sorted(candidates, key=lambda value: (_similarity(value, title), -len(value)))
+    first = _truncate_words(ordered[0], 23, 150)
+    second = ""
+    if len(ordered) > 1 and _similarity(ordered[1], first) < 0.78:
+        second = _truncate_words(ordered[1], 20, 125)
 
     if style == "cinematic":
-        return _ensure_terminal(_sentence_case(_truncate_words(first, 22, 150)))
+        return _ensure_terminal(_sentence_case(first))
+    description = _ensure_terminal(_sentence_case(first))
+    if second:
+        description = f"{description} {_ensure_terminal(_sentence_case(second))}"
+    return _ensure_terminal(_truncate_words(description, 38 if style == "viral" else 42, 260))
 
-    if style == "viral":
-        if support_clean and support_clean.lower() != first.lower():
-            base = f"{first} {support_clean}"
-        else:
-            base = first
-        return _ensure_terminal(_sentence_case(_truncate_words(base, 28, 180)))
 
-    if support_clean and support_clean.lower() != first.lower():
-        base = f"{_ensure_terminal(first)} {_ensure_terminal(support_clean)}"
-    else:
-        base = _ensure_terminal(first)
-    return _ensure_terminal(_sentence_case(_truncate_words(base, 28, 185)))
+def _hashtag(value: str) -> str:
+    words = re.findall(r"[A-Za-z0-9]+", value)
+    if not words:
+        return ""
+    joined = "".join(word[:1].upper() + word[1:] for word in words)
+    return f"#{joined[:36]}" if joined else ""
 
-def generate_clip_copy_local(text: str, style: TitleStyle = "auto") -> GeneratedCopy:
+
+def _specific_topics(text: str, local_context: str, subject_hint: str | None, title: str) -> list[str]:
+    counts = _topic_counts(text)
+    local_counts = _topic_counts(local_context)
+    subject_tokens = set(_tokens(subject_hint or ""))
+    title_tokens = set(_tokens(title))
+    scores: list[tuple[float, str]] = []
+    for token, count in counts.items():
+        if token in subject_tokens or token.isdigit() or len(token) < 5 or token in HIGH_INTEREST:
+            continue
+        score = count * 2.0 + min(2, local_counts.get(token, 0)) * 0.45
+        if token in title_tokens:
+            score += 3.2
+        # Free-form hashtags should describe the subject, not random connective dialogue.
+        if count < 2 and token not in title_tokens:
+            continue
+        scores.append((score, token))
+    scores.sort(reverse=True)
+    return [token for _, token in scores[:2]]
+
+def _make_hashtags(text: str, *, local_context: str = "", subject_hint: str | None = None,
+                   content_type: str | None = None, moment_type: str | None = None, title: str = "") -> tuple[str, ...]:
+    tags: list[str] = []
+    subject = _subject_label(subject_hint)
+    if subject:
+        tags.append(_hashtag(subject))
+    for value in CONTENT_TAGS.get(content_type or "other", CONTENT_TAGS["other"]):
+        tags.append(_hashtag(value))
+    if moment_type and moment_type in MOMENT_TAGS:
+        tags.append(_hashtag(MOMENT_TAGS[moment_type]))
+    for token in _specific_topics(text, local_context, subject_hint, title):
+        tags.append(_hashtag(token))
+    # Shorts is useful across the supported vertical destinations, but don't crowd out
+    # meaningful tags when the list is already full.
+    tags.append("#Shorts")
+    clean: list[str] = []
+    seen: set[str] = set()
+    for tag in tags:
+        key = tag.lower()
+        if tag and key not in seen:
+            clean.append(tag)
+            seen.add(key)
+        if len(clean) >= 7:
+            break
+    return tuple(clean)
+
+
+def _grounded_terms(text: str, local_context: str, subject_hint: str | None) -> tuple[str, ...]:
+    terms: list[str] = []
+    subject = _subject_label(subject_hint)
+    if subject:
+        terms.append(subject)
+    # Capitalized multi-letter words already present in source context are safe to preserve;
+    # Whisper often removes casing, so subject_hint remains the authoritative name source.
+    generic_capitals = {"the", "this", "that", "that's", "they", "there", "when", "what", "where", "but", "and", "nobody", "someone", "everyone", "because", "after", "before", "finally"}
+    for match in re.findall(r"\b[A-Z][A-Za-z0-9'’-]{2,}\b", f"{text} {local_context}"):
+        if match.lower() in generic_capitals:
+            continue
+        if match.lower() not in {term.lower() for term in terms}:
+            terms.append(match)
+        if len(terms) >= 6:
+            break
+    return tuple(terms)
+
+
+def _compose_social(description: str, hashtags: tuple[str, ...]) -> str:
+    tags = " ".join(hashtags)
+    return f"{description}\n\n{tags}".strip() if tags else description
+
+
+def generate_clip_copy_local(
+    text: str,
+    style: TitleStyle = "auto",
+    *,
+    local_context: str = "",
+    subject_hint: str | None = None,
+    content_type: str | None = None,
+    moment_type: str | None = None,
+) -> GeneratedCopy:
     normalized: TitleStyle = style if style in {"auto", "viral", "clean", "cinematic"} else "auto"
-    title = _make_title(text, normalized)
-    social_caption = _make_social_caption(text, normalized, title)
-    return GeneratedCopy(title=title, social_caption=social_caption, style=normalized)
+    clip_text = _clean(text)
+    nearby = _clean(local_context)
+    title = _make_title(
+        clip_text, normalized, local_context=nearby, subject_hint=subject_hint, content_type=content_type,
+    )
+    description = _make_description(clip_text, title, normalized, local_context=nearby)
+    hashtags = _make_hashtags(
+        clip_text, local_context=nearby, subject_hint=subject_hint, content_type=content_type, moment_type=moment_type, title=title,
+    )
+    return GeneratedCopy(
+        title=title,
+        description=description,
+        hashtags=hashtags,
+        social_caption=_compose_social(description, hashtags),
+        style=normalized,
+        grounded_terms=_grounded_terms(clip_text, nearby, subject_hint),
+    )

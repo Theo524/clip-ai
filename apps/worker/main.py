@@ -33,8 +33,8 @@ from services.transcript_cache import load_cached_transcript, save_cached_transc
 from services.context import candidate_context, normalize_content_structure, normalize_content_type, normalize_subject_hint, resolve_content_context
 from services.smart_rank import RANKING_VERSION, detect_shot_boundaries, rank_clip_candidates_m2
 
-APP_VERSION = "22.0.0-m2.1"
-RELEASE_NAME = "Smarter Clip Intelligence"
+APP_VERSION = "22.0.0-m3"
+RELEASE_NAME = "Titles & Social Metadata"
 
 app = FastAPI(title="Clip AI Worker", version=APP_VERSION)
 app.add_middleware(
@@ -513,16 +513,29 @@ def analyze_local_media(
             "context_signals": list(context.signals),
         })
 
-        notify(84, "Writing titles", "Creating dialogue-based titles and post captions…")
+        notify(84, "Writing metadata", "Creating grounded titles, descriptions and useful tags…")
         for idx, clip in enumerate(clips):
             check_cancel()
             dialogue = dialogue_for_range(segments, clip.start, clip.end)
-            generated = generate_clip_copy_local(dialogue or clip.hook, "auto")
+            local_start = float((clip.context or {}).get("local_context_start", clip.start))
+            local_end = float((clip.context or {}).get("local_context_end", clip.end))
+            local_dialogue = dialogue_for_range(segments, local_start, local_end)
+            generated = generate_clip_copy_local(
+                dialogue or clip.hook,
+                "auto",
+                local_context=local_dialogue,
+                subject_hint=context.subject_hint,
+                content_type=context.resolved_type,
+                moment_type=(clip.context or {}).get("moment_type"),
+            )
             if settings.ranking_backend.lower().strip() == "local" or not clip.title.strip():
                 clip.title = generated.title
+            clip.description = generated.description
+            clip.hashtags = list(generated.hashtags)
             clip.social_caption = generated.social_caption
+            clip.context = {**(clip.context or {}), "grounded_terms": list(generated.grounded_terms), "copy_version": "m3"}
             if clips:
-                notify(84 + int(((idx + 1) / len(clips)) * 8), "Writing titles", f"Polishing clip {idx + 1} of {len(clips)}…")
+                notify(84 + int(((idx + 1) / len(clips)) * 8), "Writing metadata", f"Polishing clip {idx + 1} of {len(clips)}…")
 
         check_cancel()
         notify(94, "Saving project", "Saving the project so it can be reopened later…")
@@ -1164,6 +1177,8 @@ def export_package(job_id: str, clip_index: int, filename: str = Query(..., min_
         "project_id": job_id,
         "project_title": data.get("title"),
         "title": clip.title,
+        "description": clip.description or "",
+        "hashtags": clip.hashtags,
         "social_caption": clip.social_caption or "",
         "start": clip.start,
         "end": clip.end,
@@ -1232,18 +1247,33 @@ def generate_clip_copy(job_id: str, clip_index: int, request: ClipCopyGenerateRe
     job_dir, data, clip = _saved_clip(job_id, clip_index)
     transcript = _load_transcript(job_id)
     dialogue = dialogue_for_range(transcript, clip.start, clip.end)
-    generated = generate_clip_copy_local(dialogue or clip.hook, request.style)
+    local_start = float((clip.context or {}).get("local_context_start", clip.start))
+    local_end = float((clip.context or {}).get("local_context_end", clip.end))
+    local_dialogue = dialogue_for_range(transcript, local_start, local_end)
+    generated = generate_clip_copy_local(
+        dialogue or clip.hook,
+        request.style,
+        local_context=local_dialogue,
+        subject_hint=data.get("subject_hint"),
+        content_type=data.get("resolved_content_type") or data.get("content_type"),
+        moment_type=(clip.context or {}).get("moment_type"),
+    )
 
     clips = list(data.get("clips") or [])
     clips[clip_index] = {
         **clips[clip_index],
         "title": generated.title,
+        "description": generated.description,
+        "hashtags": list(generated.hashtags),
         "social_caption": generated.social_caption,
+        "context": {**(clips[clip_index].get("context") or {}), "grounded_terms": list(generated.grounded_terms), "copy_version": "m3"},
     }
     save_project(job_dir, {**data, "clips": clips})
     return ClipCopyResponse(
         clip_index=clip_index,
         title=generated.title,
+        description=generated.description,
+        hashtags=list(generated.hashtags),
         social_caption=generated.social_caption,
         style=generated.style,
     )
@@ -1253,7 +1283,18 @@ def generate_clip_copy(job_id: str, clip_index: int, request: ClipCopyGenerateRe
 def update_clip_copy(job_id: str, clip_index: int, request: ClipCopyUpdateRequest):
     job_dir, data, _clip = _saved_clip(job_id, clip_index)
     title = request.title.strip()
-    social_caption = request.social_caption.strip()
+    description = request.description.strip()
+    hashtags = []
+    for raw in request.hashtags:
+        clean = re.sub(r"[^A-Za-z0-9]", "", raw.lstrip("#"))[:36]
+        tag = f"#{clean}" if clean else ""
+        if tag and tag.lower() not in {item.lower() for item in hashtags}:
+            hashtags.append(tag)
+        if len(hashtags) >= 7:
+            break
+    if not description and request.social_caption.strip():
+        description = request.social_caption.strip().split("\n\n", 1)[0].strip()
+    social_caption = f"{description}\n\n{' '.join(hashtags)}".strip() if hashtags else description
     if not title:
         raise HTTPException(status_code=422, detail="Title cannot be empty.")
 
@@ -1261,12 +1302,16 @@ def update_clip_copy(job_id: str, clip_index: int, request: ClipCopyUpdateReques
     clips[clip_index] = {
         **clips[clip_index],
         "title": title,
+        "description": description,
+        "hashtags": hashtags,
         "social_caption": social_caption,
     }
     save_project(job_dir, {**data, "clips": clips})
     return ClipCopyResponse(
         clip_index=clip_index,
         title=title,
+        description=description,
+        hashtags=hashtags,
         social_caption=social_caption,
         style="auto",
     )
@@ -1319,6 +1364,8 @@ def _render_clip_core(request: RenderClipRequest, *, progress=None, cancel_event
             "schema": 1, "app": "Clip AI", "app_version": APP_VERSION, "project_id": request.job_id,
             "project_title": project.get("title"), "render_filename": filename,
             "title": (clip_match or {}).get("title") or project.get("title") or "Clip AI Short",
+            "description": (clip_match or {}).get("description") or "",
+            "hashtags": (clip_match or {}).get("hashtags") or [],
             "social_caption": (clip_match or {}).get("social_caption") or "",
             "start": request.start, "end": request.end, "transcript_revision": int(project.get("transcript_revision", 0) or 0),
         }
@@ -1502,6 +1549,8 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
             "schema": 1, "app": "Clip AI", "app_version": APP_VERSION, "project_id": request.job_id,
             "project_title": project.get("title"), "render_filename": filename,
             "title": (clip_match or {}).get("title") or project.get("title") or "Clip AI Short",
+            "description": (clip_match or {}).get("description") or "",
+            "hashtags": (clip_match or {}).get("hashtags") or [],
             "social_caption": (clip_match or {}).get("social_caption") or "",
             "start": request.start, "end": request.end, "transcript_revision": transcript_revision,
         }

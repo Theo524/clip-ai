@@ -1,15 +1,22 @@
-# Clip AI v22 M2.1 · Smarter Clip Intelligence + Memory Safety
+# Clip AI v22 M3 · Titles & Social Metadata
 
-Clip AI turns long English-language videos into ranked, reframed, captioned, ready-to-post vertical Shorts. v22 is being delivered in guarded milestones. M2.1 keeps M2 clip intelligence and patches local Whisper memory pressure seen on 8 GB Windows PCs. The v21 render and recovery pipeline remains in place.
+Clip AI turns long English-language videos into ranked, reframed, captioned, ready-to-post vertical Shorts. M3 keeps the M2.1 memory-safe analysis pipeline and upgrades the copy/metadata layer so titles are more coherent and every selected clip can carry a grounded description and useful tags.
 
-## v22 M2 highlights
+## v22 M3 highlights
 
-- Transcript pauses, local topic shifts and compilation cues divide the source into independent scenes. For anime, film and compilations, a bounded FFmpeg keyframe scan supplies optional shot cues; if it fails or times out, transcript segmentation still works. Dialogue cuts alone do not split a scene.
-- Candidates use genre-specific **soft** duration ranges, then extend to a sentence, answer, joke or payoff where possible. A cut after “but”, “because” or “and then” is rejected. An uncertain boundary is flagged.
-- Ranking weighs standalone context, story completeness, hook, payoff, speech quality and transcript confidence. When shot sampling succeeds, frequent cuts also reduce visual suitability slightly and flag the framing for review. Best 3 favor different strong scenes. Remaining distinct candidates support **Replace suggestion**, with no new transcription or analysis. Restore top picks returns to the original selection; replacements on the results page are session-only.
-- Each new candidate records its scene bounds, moment type and quality warnings. A local context window cannot reach across a detected scene boundary. The subject field remains a hint, never a claim about an unrelated compilation scene.
-- Existing saved M1 projects and edits keep their recommendations when reopened or resumed. To compare the M2 selector on that source, create a new analysis; cached transcription may be reused.
-- OpenAI ranking remains its existing path; M2 scoring and scene-local selection apply to the default **local** ranking backend. Visual framing/caption intelligence and social copy generation remain for later milestones.
+- **Smarter titles:** Clip AI scores complete sentences for both interest and topical centrality instead of simply lifting a random catchy transcript line. Common dialogue patterns are rewritten into restrained headline forms without adding new facts.
+- **Scene-local context:** title/description generation can use the nearby M2 scene envelope to understand the moment, but the output description itself stays grounded in the selected clip. Compilation clips do not borrow unrelated context from other scenes.
+- **Show / program / subject grounding:** the optional subject hint is trusted user-provided context. It may appear in a concise title or tags when useful. Clip AI does not invent character/person names.
+- **Description + tags:** each clip now has an editable description and up to seven hashtags. Tags combine known content type, moment type and a small number of grounded topic terms.
+- **Publisher compatibility:** `social_caption` remains available as `description + tags`, so generic local publishing tools that already read Clip AI metadata continue to work.
+- **Richer exports:** export packages and render sidecars include `description`, `hashtags`, title, timestamps, context and the legacy combined social caption.
+
+## M2.1 intelligence and memory safety retained
+
+- Transcript pauses, local topic shifts and compilation cues divide the source into independent scenes. Anime/film/compilation sources can use bounded FFmpeg keyframe cut hints.
+- Candidates use content-type soft duration ranges and protect natural endings rather than forcing every clip to ~20–25 seconds.
+- Best 3 favors distinct scenes; replacement suggestions reuse already-ranked candidates.
+- Balanced uses 5-minute transcription chunks, Low memory 3-minute chunks and Fast 10-minute chunks. If faster-whisper hits a NumPy allocation error, Clip AI retries only the failing chunk in progressively smaller pieces.
 
 ## M1 context foundation retained
 
@@ -78,15 +85,15 @@ For a quick prerequisite check without starting the app, run `CHECK_CLIP_AI.bat`
 
 ## Windows installation and startup
 
-### Update an existing Windows M1 installation
+### Update an existing Windows installation
 
-Close the worker and web Command Prompt windows first. Save the M2 ZIP as
-`C:\Users\PC\Downloads\clip-ai-v22-m2-smarter-clips.zip`, then open **Command Prompt** and run:
+Close the worker and web Command Prompt windows first. Save the M3 ZIP as
+`C:\Users\PC\Downloads\clip-ai-v22-m3-social-metadata.zip`, then open **Command Prompt** and run:
 
 ```bat
 cd /d C:\Users\PC\Downloads
-tar -xf "clip-ai-v22-m2-smarter-clips.zip"
-xcopy "C:\Users\PC\Downloads\clip-ai-starter-v22-m2\*" "C:\Users\PC\Downloads\clip-ai-starter" /E /I /Y
+tar -xf "clip-ai-v22-m3-social-metadata.zip"
+xcopy "C:\Users\PC\Downloads\clip-ai-starter-v22-m3\*" "C:\Users\PC\Downloads\clip-ai-starter" /E /I /Y
 cd /d C:\Users\PC\Downloads\clip-ai-starter\apps\worker
 .venv\Scripts\activate
 pip install -r requirements.txt
@@ -99,7 +106,7 @@ START_CLIP_AI.bat
 
 The ZIP contains source, tests and documentation only; copying it over the
 installation retains your local `.env`, worker `.venv`, saved projects and media.
-If `npm run build` fails on Windows, record the exact error before testing M2.
+If `npm run build` fails on Windows, record the exact error before continuing; the update block intentionally stops there before startup.
 
 ### Manual worker startup
 ```bat
@@ -134,7 +141,7 @@ MIN_FREE_DISK_GB=2.0
 
 ## Tests
 
-v22 M2.1 ships with the M2 suite plus memory-pressure regression tests, including compilation boundaries, natural endings, variable duration, scene diversity and quality warnings along with the M1/v21 regression tests. Frontend TypeScript checking (`tsc --noEmit`) passes. This workspace could not complete Next's production build because its process runner returned `ENOENT: uv_resident_set_memory`; run `npm run build` on Windows before considering M2 fully validated.
+v22 M3 currently passes **68 backend tests**, including M3 grounding/tag tests plus the M2.1 memory-pressure, compilation-boundary, natural-ending, variable-duration, scene-diversity and v21 reliability suites. TSX syntax validation passes in this workspace. Full Next.js dependency/type/build validation should be run by `npm install` + `npm run build` on Windows as part of the normal update command.
 
 ## Current boundary
 

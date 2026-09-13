@@ -46,6 +46,8 @@ class ClipCandidate(BaseModel):
     score: int = Field(ge=0, le=100)
     reasons: list[str]
     social_caption: str | None = None
+    description: str | None = None
+    hashtags: list[str] = Field(default_factory=list)
     score_breakdown: dict[str, int] = Field(default_factory=dict)
     editor_note: str | None = None
     context: dict = Field(default_factory=dict)
@@ -57,12 +59,17 @@ class ClipCopyGenerateRequest(BaseModel):
 
 class ClipCopyUpdateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=120)
-    social_caption: str = Field(default="", max_length=500)
+    description: str = Field(default="", max_length=500)
+    hashtags: list[str] = Field(default_factory=list, max_length=10)
+    # Kept for compatibility with v21/M2 clients. M3 derives this from description + tags.
+    social_caption: str = Field(default="", max_length=900)
 
 
 class ClipCopyResponse(BaseModel):
     clip_index: int
     title: str
+    description: str = ""
+    hashtags: list[str] = Field(default_factory=list)
     social_caption: str
     style: Literal["auto", "viral", "clean", "cinematic"] = "auto"
 
