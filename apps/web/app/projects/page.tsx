@@ -16,6 +16,11 @@ type ProjectSummary = {
   storage_bytes: number;
   status?: string;
   processing_profile?: string;
+  content_type?: string;
+  resolved_content_type?: string;
+  content_structure?: string;
+  resolved_content_structure?: string;
+  subject_hint?: string | null;
 };
 
 function humanBytes(bytes: number) {
@@ -93,7 +98,7 @@ export default function ProjectsPage() {
           <a className="navLink activeNav" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v21 · long-term beta</div>
+          <div className="badge">v22 · M2 smarter clips</div>
         </div>
       </nav>
 
@@ -149,6 +154,8 @@ export default function ProjectsPage() {
                     <span>{project.render_count} renders</span>
                     <span>{humanBytes(project.storage_bytes)}</span>
                     <span>{project.processing_profile || "balanced"}</span>
+                    <span>{(project.resolved_content_type || project.content_type || "other").replace("film-tv", "film / TV").replace("meme-comedy", "meme / comedy")}</span>
+                    <span>{(project.resolved_content_structure || project.content_structure || "single-story").replace("single-story", "single story")}</span>
                   </div>
                   <div className="projectActions">
                     <a className="projectOpen" href={`/?project=${project.job_id}`}>Open project</a>

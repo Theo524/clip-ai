@@ -83,6 +83,7 @@ export default function StatusPage() {
   }
 
   function replayOnboarding() {
+    window.localStorage.removeItem("clip-ai-v22-onboarding");
     window.localStorage.removeItem("clip-ai-v21-onboarding");
     window.localStorage.removeItem("clip-ai-v20-onboarding");
     window.location.href = "/";
@@ -96,7 +97,7 @@ export default function StatusPage() {
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink activeNav" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v21 · long-term beta</div>
+          <div className="badge">v22 · M2 smarter clips</div>
         </div>
       </nav>
 
@@ -158,7 +159,7 @@ export default function StatusPage() {
 
             <section className="betaNotice">
               <strong>What “beta” means here</strong>
-              <p>This v21 long-term beta adds restart recovery, checkpointed processing, safer media normalization and export tooling while keeping the complete editing pipeline on your PC. Accounts, hosted cloud workers, shared projects and payments are deployment features, not requirements for testing the product locally.</p>
+              <p>v22 M2 uses local transcript scenes and lightweight shot cues to select more complete moments with flexible lengths. Existing projects retain saved edits; new analyses use the smarter local ranking.</p>
               <code>{data.work_dir}</code>
             </section>
           </>

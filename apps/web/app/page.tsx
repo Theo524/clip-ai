@@ -12,6 +12,16 @@ type Clip = {
   social_caption?: string | null;
   score_breakdown?: Record<string, number>;
   editor_note?: string | null;
+  context?: {
+    content_type?: string;
+    content_structure?: string;
+    subject_hint?: string | null;
+    local_context_start?: number;
+    local_context_end?: number;
+    moment_type?: string;
+    scene_id?: number;
+    quality_warnings?: string[];
+  };
 };
 
 type AnalyzeResponse = {
@@ -90,6 +100,12 @@ type ProjectDetail = {
   clip_count: number;
   render_count: number;
   storage_bytes: number;
+  content_type?: string;
+  resolved_content_type?: string;
+  content_structure?: string;
+  resolved_content_structure?: string;
+  subject_hint?: string | null;
+  context_confidence?: number;
   clips: Clip[];
   renders: SavedRender[];
 };
@@ -100,6 +116,8 @@ type FrameSize = "auto" | "compact" | "balanced" | "immersive";
 type Platform = "auto" | "shorts" | "tiktok" | "reels";
 type CopyStyle = "auto" | "viral" | "clean" | "cinematic";
 type ProcessingProfile = "low-memory" | "balanced" | "fast";
+type ContentType = "auto" | "podcast" | "anime" | "film-tv" | "documentary" | "meme-comedy" | "gameplay" | "other";
+type ContentStructure = "auto" | "single-story" | "compilation" | "conversation";
 
 type RenderResponse = {
   job_id: string;
@@ -182,6 +200,24 @@ function captionZoneLabel(zone?: RenderResponse["caption_zone"]) {
   return "lower caption-safe zone";
 }
 
+function contentTypeLabel(value?: string | null) {
+  if (value === "podcast") return "Podcast / Interview";
+  if (value === "anime") return "Anime / Animation";
+  if (value === "film-tv") return "Film / TV";
+  if (value === "documentary") return "Documentary / Educational";
+  if (value === "meme-comedy") return "Meme / Comedy";
+  if (value === "gameplay") return "Gameplay / Commentary";
+  if (value === "other") return "Other";
+  return "Auto";
+}
+
+function contentStructureLabel(value?: string | null) {
+  if (value === "single-story") return "Single story / episode";
+  if (value === "compilation") return "Compilation / mixed clips";
+  if (value === "conversation") return "Conversation";
+  return "Auto";
+}
+
 function exportFilename(title: string) {
   const clean = title
     .normalize("NFKD")
@@ -223,6 +259,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<AnalyzeResponse | null>(null);
+  const [replacedIndices, setReplacedIndices] = useState<number[]>([]);
   const [rendering, setRendering] = useState<{ index: number; kind: RenderKind } | null>(null);
   const [rendered, setRendered] = useState<Record<number, RenderResponse>>({});
   const [layouts, setLayouts] = useState<Record<number, LayoutMode>>({});
@@ -242,6 +279,9 @@ export default function Home() {
   const [preflight, setPreflight] = useState<SystemPreflight | null>(null);
   const [preflightError, setPreflightError] = useState("");
   const [processingProfile, setProcessingProfile] = useState<ProcessingProfile>("balanced");
+  const [contentType, setContentType] = useState<ContentType>("auto");
+  const [contentStructure, setContentStructure] = useState<ContentStructure>("auto");
+  const [subjectHint, setSubjectHint] = useState("");
   const [transcriptText, setTranscriptText] = useState<Record<number, string>>({});
   const [transcriptLoaded, setTranscriptLoaded] = useState<Record<number, boolean>>({});
   const [transcriptBusy, setTranscriptBusy] = useState<number | null>(null);
@@ -254,7 +294,7 @@ export default function Home() {
   useEffect(() => {
     const jobId = new URLSearchParams(window.location.search).get("project");
     if (jobId) loadProject(jobId);
-    const seenOnboarding = window.localStorage.getItem("clip-ai-v21-onboarding") || window.localStorage.getItem("clip-ai-v20-onboarding");
+    const seenOnboarding = window.localStorage.getItem("clip-ai-v22-onboarding") || window.localStorage.getItem("clip-ai-v21-onboarding") || window.localStorage.getItem("clip-ai-v20-onboarding");
     const savedProfile = window.localStorage.getItem("clip-ai-processing-profile") as ProcessingProfile | null;
     if (savedProfile && ["low-memory", "balanced", "fast"].includes(savedProfile)) setProcessingProfile(savedProfile);
     if (!seenOnboarding && !jobId) setOnboardingOpen(true);
@@ -274,7 +314,7 @@ export default function Home() {
   }
 
   function finishOnboarding() {
-    window.localStorage.setItem("clip-ai-v21-onboarding", "done");
+    window.localStorage.setItem("clip-ai-v22-onboarding", "done");
     setOnboardingOpen(false);
   }
 
@@ -310,6 +350,10 @@ export default function Home() {
       if (!res.ok) throw new Error(data.detail || "Could not open this project");
       setOpenedProjectTitle(data.title);
       setSavedRenders(data.renders || []);
+      if (["auto", "podcast", "anime", "film-tv", "documentary", "meme-comedy", "gameplay", "other"].includes(data.content_type || "")) setContentType((data.content_type || "auto") as ContentType);
+      if (["auto", "single-story", "compilation", "conversation"].includes(data.content_structure || "")) setContentStructure((data.content_structure || "auto") as ContentStructure);
+      setSubjectHint(data.subject_hint || "");
+      setReplacedIndices([]);
       setResult({
         source_url: data.source_url || data.title,
         mock: false,
@@ -329,6 +373,7 @@ export default function Home() {
     setError("");
     setLoading(true);
     setResult(null);
+    setReplacedIndices([]);
     setRendered({});
     setLayouts({});
     setCaptions({});
@@ -345,6 +390,9 @@ export default function Home() {
       form.append("file", file);
       form.append("max_clips", "6");
       form.append("processing_profile", processingProfile);
+      form.append("content_type", contentType);
+      form.append("content_structure", contentStructure);
+      if (subjectHint.trim()) form.append("subject_hint", subjectHint.trim());
       window.localStorage.setItem("clip-ai-processing-profile", processingProfile);
       const res = await fetch(`${workerUrl}/tasks/analyze-upload`, { method: "POST", body: form });
       const started: TaskCreate & { detail?: string } = await res.json();
@@ -368,6 +416,7 @@ export default function Home() {
     setYoutubeChecking(true);
     setYoutubeInfo(null);
     setResult(null);
+    setReplacedIndices([]);
     setRendered({});
     setSavedRenders([]);
     setCopyStyles({});
@@ -392,6 +441,7 @@ export default function Home() {
     setError("");
     setLoading(true);
     setResult(null);
+    setReplacedIndices([]);
     setRendered({});
     setLayouts({});
     setCaptions({});
@@ -406,6 +456,9 @@ export default function Home() {
       form.append("file", youtubeFile);
       form.append("max_clips", "6");
       form.append("processing_profile", processingProfile);
+      form.append("content_type", contentType);
+      form.append("content_structure", contentStructure);
+      if (subjectHint.trim()) form.append("subject_hint", subjectHint.trim());
       window.localStorage.setItem("clip-ai-processing-profile", processingProfile);
       form.append("title", youtubeInfo.title);
       if (youtubeInfo.author_name) form.append("author_name", youtubeInfo.author_name);
@@ -610,7 +663,7 @@ export default function Home() {
 
   async function renderBestThree() {
     if (!result?.job_id || batchRendering) return;
-    const indices = topClipIndices(result.clips, 3);
+    const indices = bestIndices;
     if (!indices.length) return;
     setError("");
     setBatchRendering({ current: 0, total: indices.length });
@@ -627,6 +680,7 @@ export default function Home() {
     setMode(nextMode);
     setError("");
     setResult(null);
+    setReplacedIndices([]);
     setRendered({});
     setSavedRenders([]);
     setCopyStyles({});
@@ -640,7 +694,8 @@ export default function Home() {
     }
   }
 
-  const bestIndices = result ? topClipIndices(result.clips, 3) : [];
+  const availableIndices = result ? topClipIndices(result.clips, result.clips.length).filter(index => !replacedIndices.includes(index)) : [];
+  const bestIndices = availableIndices.slice(0, 3);
 
   return (
     <div className="shell">
@@ -649,7 +704,7 @@ export default function Home() {
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
-          <div className="badge">v21 · long-term beta</div>
+          <div className="badge">v22 · M2 smarter clips</div>
         </div>
       </nav>
 
@@ -679,6 +734,41 @@ export default function Home() {
                   onChange={(e) => setFile(e.target.files?.[0] || null)}
                 />
               </label>
+              <div className="contextPanel">
+                <div className="contextPanelHead">
+                  <span><strong>Content context</strong><small>Auto is recommended. A category or show/topic hint helps later milestones make better clip decisions.</small></span>
+                  <span className="contextBeta">v22 foundation</span>
+                </div>
+                <div className="contextGrid">
+                  <label>
+                    <span>Content type</span>
+                    <select value={contentType} onChange={(e) => setContentType(e.target.value as ContentType)} disabled={loading}>
+                      <option value="auto">Auto · recommended</option>
+                      <option value="podcast">Podcast / Interview</option>
+                      <option value="anime">Anime / Animation</option>
+                      <option value="film-tv">Film / TV</option>
+                      <option value="documentary">Documentary / Educational</option>
+                      <option value="meme-comedy">Meme / Comedy</option>
+                      <option value="gameplay">Gameplay / Commentary</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Video structure</span>
+                    <select value={contentStructure} onChange={(e) => setContentStructure(e.target.value as ContentStructure)} disabled={loading}>
+                      <option value="auto">Auto · detect structure</option>
+                      <option value="single-story">Single story / episode</option>
+                      <option value="compilation">Compilation / mixed clips</option>
+                      <option value="conversation">Conversation</option>
+                    </select>
+                  </label>
+                </div>
+                <label className="subjectHintField">
+                  <span>Show / program / subject <small>optional</small></span>
+                  <input value={subjectHint} onChange={(e) => setSubjectHint(e.target.value)} maxLength={160} placeholder="e.g. Attack on Titan, Planet Earth III" disabled={loading} />
+                </label>
+                <p>The hint is context, not a fact: Clip AI will not assume every section of a compilation is about the same event.</p>
+              </div>
               <label className="profilePicker">
                 <span><strong>Processing profile</strong><small>Balanced is recommended. Low memory is safer on 8 GB PCs.</small></span>
                 <select value={processingProfile} onChange={(e) => setProcessingProfile(e.target.value as ProcessingProfile)} disabled={loading}>
@@ -741,6 +831,21 @@ export default function Home() {
                     />
                   </label>
 
+                  <div className="contextPanel compactContext">
+                    <div className="contextPanelHead">
+                      <span><strong>Content context</strong><small>Choose Auto unless you know the format.</small></span>
+                      <span className="contextBeta">v22 foundation</span>
+                    </div>
+                    <div className="contextGrid">
+                      <label><span>Content type</span><select value={contentType} onChange={(e) => setContentType(e.target.value as ContentType)} disabled={loading}>
+                        <option value="auto">Auto · recommended</option><option value="podcast">Podcast / Interview</option><option value="anime">Anime / Animation</option><option value="film-tv">Film / TV</option><option value="documentary">Documentary / Educational</option><option value="meme-comedy">Meme / Comedy</option><option value="gameplay">Gameplay / Commentary</option><option value="other">Other</option>
+                      </select></label>
+                      <label><span>Video structure</span><select value={contentStructure} onChange={(e) => setContentStructure(e.target.value as ContentStructure)} disabled={loading}>
+                        <option value="auto">Auto · detect structure</option><option value="single-story">Single story / episode</option><option value="compilation">Compilation / mixed clips</option><option value="conversation">Conversation</option>
+                      </select></label>
+                    </div>
+                    <label className="subjectHintField"><span>Show / program / subject <small>optional</small></span><input value={subjectHint} onChange={(e) => setSubjectHint(e.target.value)} maxLength={160} placeholder="e.g. Attack on Titan, Planet Earth III" disabled={loading} /></label>
+                  </div>
                   <label className="profilePicker">
                     <span><strong>Processing profile</strong><small>Balanced is recommended. Low memory is safer on 8 GB PCs.</small></span>
                     <select value={processingProfile} onChange={(e) => setProcessingProfile(e.target.value as ProcessingProfile)} disabled={loading}>
@@ -794,7 +899,14 @@ export default function Home() {
               <div className="badge">{result.mock ? "Demo analysis" : "Real local transcript"}</div>
             </div>
 
-
+            {!result.mock && result.clips[0]?.context && (
+              <div className="contextSummary">
+                <span><b>Context</b>{contentTypeLabel(result.clips[0].context?.content_type)}</span>
+                <span><b>Structure</b>{contentStructureLabel(result.clips[0].context?.content_structure)}</span>
+                {result.clips[0].context?.subject_hint && <span><b>Hint</b>{result.clips[0].context?.subject_hint}</span>}
+                <small>M2 chooses scene-local moments and adjusts clip length around natural endings. Subject is a hint, not a fact about every scene.</small>
+              </div>
+            )}
 
             {!result.mock && bestIndices.length > 0 && (
               <section className="bestPicksPanel">
@@ -802,7 +914,7 @@ export default function Home() {
                   <div>
                     <span className="bestEyebrow">AI EDITOR PICKS</span>
                     <h3>Best 3 moments</h3>
-                    <p>These have the strongest mix of hook, standalone context, payoff and likely retention.</p>
+                    <p>Different scenes, natural starts and complete endings matter alongside the hook. You can replace a pick without analyzing again.</p>
                   </div>
                   <button
                     className="renderAllButton"
@@ -812,6 +924,7 @@ export default function Home() {
                   >
                     {batchRendering ? `Rendering ${batchRendering.current}/${batchRendering.total}…` : "Render all 3"}
                   </button>
+                  {replacedIndices.length > 0 && <button className="restorePicksButton" type="button" onClick={() => setReplacedIndices([])} disabled={batchRendering !== null}>Restore top picks</button>}
                 </div>
                 <div className="bestPicksGrid">
                   {bestIndices.map((index, rank) => {
@@ -826,7 +939,9 @@ export default function Home() {
                           <span className={`bestScore ${scoreTone(clip.score)}`}>{clip.score}/100</span>
                         </div>
                         <h4>{clip.title}</h4>
+                        {clip.context?.moment_type && clip.context.moment_type !== "unknown" && <small>{clip.context.moment_type} moment</small>}
                         <div className="bestStartsWith"><span>Starts with</span><p>“{clip.hook}”</p></div>
+                        {!!clip.context?.quality_warnings?.length && <p className="editorNote">Check: {clip.context.quality_warnings.join(" · ")}</p>}
                         <details className="bestWhy">
                           <summary>Why this clip?</summary>
                           <p className="editorNote">{clip.editor_note || clip.reasons.slice(0, 2).join(" · ")}</p>
@@ -851,6 +966,7 @@ export default function Home() {
                           >
                             {rendering?.index === index && rendering.kind === "short" ? "Creating…" : alreadyRendered ? "Render again" : "Create Short"}
                           </button>
+                          {availableIndices.length > 3 && <button className="replaceButton" type="button" onClick={() => setReplacedIndices(current => [...current, index])} disabled={rendering !== null || batchRendering !== null}>Replace suggestion</button>}
                         </div>
                         {bestRenderedClip && (
                           <div className="bestRendered">
@@ -1266,7 +1382,7 @@ export default function Home() {
             </div>
               </div>
             </details>
-            <div className="footNote">v21 adds recovery, safer long-video processing and export tools without changing the simple Auto-first workflow.</div>
+            <div className="footNote">v22 M2 adds scene-local suggestions, flexible duration and ending checks. Original render and manual editing controls remain available.</div>
           </section>
         )}
       </main>
@@ -1277,7 +1393,7 @@ export default function Home() {
             <div className="onboardingTop">
               <span className="onboardingMark">✦</span>
               <div>
-                <span className="onboardingKicker">Clip AI v21 long-term beta</span>
+                <span className="onboardingKicker">Clip AI v22 · Smarter Clip Intelligence</span>
                 <h2 id="welcome-title">You do not need to learn the editor first.</h2>
               </div>
             </div>

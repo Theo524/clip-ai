@@ -1,5 +1,8 @@
 from typing import Literal
 
+ContentType = Literal["auto", "podcast", "anime", "film-tv", "documentary", "meme-comedy", "gameplay", "other"]
+ContentStructure = Literal["auto", "single-story", "compilation", "conversation"]
+
 from pydantic import BaseModel, Field, HttpUrl
 
 
@@ -8,6 +11,9 @@ class AnalyzeRequest(BaseModel):
     local_media_path: str | None = None
     max_clips: int = Field(default=6, ge=1, le=12)
     processing_profile: Literal["low-memory", "balanced", "fast"] = "balanced"
+    content_type: ContentType = "auto"
+    content_structure: ContentStructure = "auto"
+    subject_hint: str | None = Field(default=None, max_length=160)
 
 
 class YouTubeInfoResponse(BaseModel):
@@ -42,6 +48,7 @@ class ClipCandidate(BaseModel):
     social_caption: str | None = None
     score_breakdown: dict[str, int] = Field(default_factory=dict)
     editor_note: str | None = None
+    context: dict = Field(default_factory=dict)
 
 
 class ClipCopyGenerateRequest(BaseModel):
@@ -131,6 +138,12 @@ class ProjectSummary(BaseModel):
     storage_bytes: int = 0
     status: str = "ready"
     processing_profile: str = "balanced"
+    content_type: str = "auto"
+    resolved_content_type: str = "other"
+    content_structure: str = "auto"
+    resolved_content_structure: str = "single-story"
+    subject_hint: str | None = None
+    context_confidence: float = 0.0
 
 
 class ProjectDetail(ProjectSummary):

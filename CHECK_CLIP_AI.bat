@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo Clip AI v21 preflight
+echo Clip AI v22 M2 preflight
 echo =====================
 where ffmpeg >nul 2>nul && echo [OK] FFmpeg || echo [MISSING] FFmpeg
 where ffprobe >nul 2>nul && echo [OK] FFprobe || echo [MISSING] FFprobe

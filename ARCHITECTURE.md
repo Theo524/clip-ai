@@ -1,4 +1,4 @@
-# Clip AI v21 architecture
+# Clip AI v22 M2 architecture
 
 v21 keeps the existing creative pipeline but adds durable local task/project state and an editing/export layer around it.
 
@@ -12,7 +12,7 @@ Next.js web app
   ├─ Projects search/filter/resume
   └─ System + redacted diagnostics
              ↓
-FastAPI worker 21.0.0-beta.1
+FastAPI worker 22.0.0-m2
              ↓
 media preflight + disk guard
              ↓
@@ -27,7 +27,7 @@ ranking checkpoint/cache
              ↓
 word transcript + ranked moments + copy
              ↓
-atomic project.json (schema v21)
+atomic project.json (schema v22)
              ↓
 smart reframe / active-speaker tracking / captions
              ↓
@@ -48,7 +48,7 @@ If the worker closes while a task is running, that task is converted to a recove
 
 ## Project migrations
 
-`project.json` uses schema version 21. Older local projects are migrated additively when loaded. New fields receive safe defaults; saved source/transcripts/clips/renders remain intact. Writes use a temporary file and replace pattern to reduce partial JSON corruption after a crash.
+`project.json` uses schema version 22. Older local projects are migrated additively when loaded. New fields receive safe defaults; saved source/transcripts/clips/renders remain intact. Writes use a temporary file and replace pattern to reduce partial JSON corruption after a crash.
 
 ## Media normalization
 
@@ -87,3 +87,8 @@ The diagnostics endpoint produces a ZIP of useful environment/project/task infor
 ## Future hosted deployment
 
 A hosted public release should replace local disk/task state with authenticated accounts, object storage, a database and a durable queue; processing should run on isolated scalable workers. v21's project/checkpoint boundaries are designed to make that migration easier later.
+
+
+## v22 context and M2 ranking
+
+Projects persist requested/resolved content type, requested/resolved structure, optional subject hint, confidence/signals, and a local context envelope per clip. M2's local selector records scene bounds, moment types and quality warnings; the context envelope is clamped to the scene. Existing M1 projects retain their saved clips when resumed.

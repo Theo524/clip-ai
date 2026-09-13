@@ -25,7 +25,7 @@ def test_empty_vad_chunk_retries_without_vad(tmp_path, monkeypatch):
     monkeypatch.setattr(
         main,
         "_rank_segments",
-        lambda _segments, max_clips: [
+        lambda _segments, max_clips, **_kwargs: [
             ClipCandidate(start=0.0, end=4.0, title="Quiet dialogue", hook="Quiet English dialogue", score=80, reasons=["clear thought"])
         ],
     )
@@ -47,7 +47,7 @@ def test_same_media_reuses_transcript_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         main,
         "_rank_segments",
-        lambda _segments, max_clips: [
+        lambda _segments, max_clips, **_kwargs: [
             ClipCandidate(start=0.0, end=4.0, title="Cached", hook="Cache me", score=80, reasons=["clear thought"])
         ],
     )

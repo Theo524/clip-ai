@@ -1,8 +1,20 @@
-# Clip AI v21 long-term beta checklist
+# Clip AI v22 M2 checkpoint checklist
 
-Use this checklist before treating v21 as the stable local build.
+Use this checklist before declaring M2 stable. Keep the M1/v21 reliability checks below, especially render and recovery.
+
+## M2 clip intelligence (test with a newly analyzed source)
+- [ ] A comedy/meme source can produce a short complete 8–15 second moment; no forced 20–25 second padding.
+- [ ] A longer answer/story can extend beyond 45 seconds when the ending needs it.
+- [ ] A candidate does not stop at “but”, “because” or “and then”; listen for the answer or reaction after a short pause.
+- [ ] On a mixed-scene compilation, a Best 3 clip never combines dialogue from unrelated scenes, and its opening makes sense on its own.
+- [ ] Best 3 come from different good moments when available; Replace suggestion picks the next distinct candidate without another analysis.
+- [ ] Render all 3 uses the currently displayed picks, including a replacement; Restore top picks returns to the first picks.
+- [ ] Check any boundary/confidence warning against the actual source audio; manual trim still allows corrections.
+- [ ] Reopen an older M1 project and confirm previous clip edits and renders remain unchanged.
+- [ ] Time one 20–25 minute anime/film source on Balanced to check that optional shot cues do not slow the normal workflow excessively.
 
 ## Startup / first run
+- [ ] In `apps\web`, `npm run build` completes on Windows (the build could not complete in the sandboxed validation environment).
 - [ ] `CHECK_CLIP_AI.bat` reports FFmpeg, FFprobe, Node and the worker virtual environment correctly.
 - [ ] `START_CLIP_AI.bat` opens worker + web terminals and then the app.
 - [ ] System shows the required checks as Ready.

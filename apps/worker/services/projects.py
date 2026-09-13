@@ -7,7 +7,7 @@ import os
 import shutil
 import uuid
 
-PROJECT_SCHEMA_VERSION = 21
+PROJECT_SCHEMA_VERSION = 22
 
 
 def utc_now_iso() -> str:
@@ -28,6 +28,13 @@ def migrate_project(data: dict, job_id: str | None = None) -> dict:
         migrated.setdefault("job_id", job_id)
     migrated.setdefault("status", "ready" if migrated.get("clips") else "queued")
     migrated.setdefault("processing_profile", "balanced")
+    migrated.setdefault("content_type", "auto")
+    migrated.setdefault("resolved_content_type", "other")
+    migrated.setdefault("content_structure", "auto")
+    migrated.setdefault("resolved_content_structure", "single-story")
+    migrated.setdefault("subject_hint", None)
+    migrated.setdefault("context_confidence", 0.0)
+    migrated.setdefault("context_signals", [])
     migrated.setdefault("clips", [])
     migrated.setdefault("transcript_revision", 0)
     migrated["schema_version"] = PROJECT_SCHEMA_VERSION

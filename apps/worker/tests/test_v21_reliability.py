@@ -29,15 +29,19 @@ def test_subtitle_exports_are_relative_to_clip_start():
     assert "00:00:02.200 --> 00:00:04.000" in vtt
 
 
-def test_project_migration_adds_v21_defaults(tmp_path):
+def test_project_migration_adds_v22_context_defaults(tmp_path):
     job = tmp_path / "abc"
     job.mkdir()
     (job / "project.json").write_text(json.dumps({"title": "Old", "clips": []}), encoding="utf-8")
     data = load_project(job)
-    assert data["schema_version"] == 21
+    assert data["schema_version"] == 22
     assert data["processing_profile"] == "balanced"
     assert data["status"] == "queued"
     assert data["transcript_revision"] == 0
+    assert data["content_type"] == "auto"
+    assert data["resolved_content_type"] == "other"
+    assert data["content_structure"] == "auto"
+    assert data["resolved_content_structure"] == "single-story"
 
 
 def test_project_save_is_merge_safe(tmp_path):

@@ -29,9 +29,11 @@ from services.profiles import get_processing_profile, PROFILES
 from services.subtitles_export import to_srt, to_vtt
 from services.diagnostics import build_diagnostic_zip
 from services.transcript_cache import load_cached_transcript, save_cached_transcript, transcript_cache_key
+from services.context import candidate_context, normalize_content_structure, normalize_content_type, normalize_subject_hint, resolve_content_context
+from services.smart_rank import RANKING_VERSION, detect_shot_boundaries, rank_clip_candidates_m2
 
-APP_VERSION = "21.0.0-beta.1"
-RELEASE_NAME = "Long-Term Beta"
+APP_VERSION = "22.0.0-m2"
+RELEASE_NAME = "Smarter Clip Intelligence"
 
 app = FastAPI(title="Clip AI Worker", version=APP_VERSION)
 app.add_middleware(
@@ -174,12 +176,17 @@ def _eta_text(seconds: float) -> str:
     return f"about {hours} hr {remainder} min remaining" if remainder else f"about {hours} hr remaining"
 
 
-def _rank_segments(segments, max_clips: int):
+def _rank_segments(segments, max_clips: int, *, context=None, media_path=None):
     backend = settings.ranking_backend.lower().strip()
 
     if backend == "local":
-        from services.local_rank import rank_clip_candidates_local
-        return rank_clip_candidates_local(segments, max_clips=max_clips)
+        if context is None:
+            from services.local_rank import rank_clip_candidates_local
+            return rank_clip_candidates_local(segments, max_clips=max_clips)
+        shots = []
+        if media_path and (context.resolved_type in {"anime", "film-tv"} or context.resolved_structure == "compilation"):
+            shots = detect_shot_boundaries(media_path)
+        return rank_clip_candidates_m2(segments, max_clips=max_clips, context=context, shot_boundaries=shots)
 
     if backend == "openai":
         if not settings.openai_api_key:
@@ -206,6 +213,9 @@ def analyze_local_media(
     author_name: str | None = None,
     thumbnail_url: str | None = None,
     processing_profile: str | None = None,
+    content_type: str = "auto",
+    content_structure: str = "auto",
+    subject_hint: str | None = None,
     progress=None,
     cancel_event=None,
 ) -> AnalyzeResponse:
@@ -214,6 +224,9 @@ def analyze_local_media(
     job_dir.mkdir(parents=True, exist_ok=True)
     audio_dir = job_dir / "audio"
     profile = get_processing_profile(processing_profile or settings.processing_profile)
+    requested_content_type = normalize_content_type(content_type)
+    requested_content_structure = normalize_content_structure(content_structure)
+    clean_subject_hint = normalize_subject_hint(subject_hint)
 
     def notify(value: int, stage: str, message: str) -> None:
         if progress is not None:
@@ -263,6 +276,9 @@ def analyze_local_media(
             "thumbnail_url": thumbnail_url,
             "status": "analyzing",
             "processing_profile": profile.name,
+            "content_type": requested_content_type,
+            "content_structure": requested_content_structure,
+            "subject_hint": clean_subject_hint,
             "media_preflight": detailed_info,
             "normalized": normalize_needed,
         })
@@ -345,7 +361,24 @@ def analyze_local_media(
             encoding="utf-8",
         )
         save_cached_transcript(cache_root, cache_key, segments)
-        save_project(job_dir, {"status": "transcribed", "processing_profile": profile.name})
+        context = resolve_content_context(
+            segments,
+            requested_type=requested_content_type,
+            requested_structure=requested_content_structure,
+            subject_hint=clean_subject_hint,
+            project_title=project_title or Path(media_path).name,
+        )
+        save_project(job_dir, {
+            "status": "transcribed",
+            "processing_profile": profile.name,
+            "content_type": context.requested_type,
+            "resolved_content_type": context.resolved_type,
+            "content_structure": context.requested_structure,
+            "resolved_content_structure": context.resolved_structure,
+            "subject_hint": context.subject_hint,
+            "context_confidence": context.confidence,
+            "context_signals": list(context.signals),
+        })
 
         check_cancel()
         existing_project = load_project(job_dir) or {}
@@ -355,8 +388,28 @@ def analyze_local_media(
             clips = [ClipCandidate.model_validate(item) for item in existing_clips[:max_clips]]
         else:
             notify(74, "Finding moments", "Ranking the strongest standalone moments…")
-            clips = _rank_segments(segments, max_clips=max_clips)
-            save_project(job_dir, {"status": "ranked", "clips": [clip.model_dump() for clip in clips], "processing_profile": profile.name})
+            if settings.ranking_backend.lower().strip() == "local":
+                clips = _rank_segments(segments, max_clips=max_clips, context=context, media_path=working_media)
+            else:
+                clips = _rank_segments(segments, max_clips=max_clips)
+
+        for clip in clips:
+            previous = clip.context or {}
+            clip.context = {**candidate_context(context, clip.start, clip.end,
+                                               previous.get("scene_start"), previous.get("scene_end")), **previous}
+        save_project(job_dir, {
+            "status": "ranked",
+            "clips": [clip.model_dump() for clip in clips],
+            "ranking_version": RANKING_VERSION if settings.ranking_backend.lower().strip() == "local" and not existing_clips else existing_project.get("ranking_version", "m1"),
+            "processing_profile": profile.name,
+            "content_type": context.requested_type,
+            "resolved_content_type": context.resolved_type,
+            "content_structure": context.requested_structure,
+            "resolved_content_structure": context.resolved_structure,
+            "subject_hint": context.subject_hint,
+            "context_confidence": context.confidence,
+            "context_signals": list(context.signals),
+        })
 
         notify(84, "Writing titles", "Creating dialogue-based titles and post captions…")
         for idx, clip in enumerate(clips):
@@ -383,6 +436,13 @@ def analyze_local_media(
                 "clips": [clip.model_dump() for clip in clips],
                 "status": "ready",
                 "processing_profile": profile.name,
+                "content_type": context.requested_type,
+                "resolved_content_type": context.resolved_type,
+                "content_structure": context.requested_structure,
+                "resolved_content_structure": context.resolved_structure,
+                "subject_hint": context.subject_hint,
+                "context_confidence": context.confidence,
+                "context_signals": list(context.signals),
             },
         )
         notify(98, "Cleaning up", "Removing temporary audio files…")
@@ -572,6 +632,9 @@ async def analyze_youtube_owned(
     author_name: str | None = Form(default=None),
     thumbnail_url: str | None = Form(default=None),
     processing_profile: str = Form(default="balanced"),
+    content_type: str = Form(default="auto"),
+    content_structure: str = Form(default="auto"),
+    subject_hint: str | None = Form(default=None),
 ):
     if not is_youtube_url(source_url):
         raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
@@ -613,6 +676,9 @@ async def analyze_youtube_owned(
         author_name=author_name,
         thumbnail_url=thumbnail_url,
         processing_profile=processing_profile,
+        content_type=content_type,
+        content_structure=content_structure,
+        subject_hint=subject_hint,
     )
 
 
@@ -636,7 +702,7 @@ def analyze(request: AnalyzeRequest):
             detail="Direct YouTube ingestion is not connected yet. Upload an authorised video file for real analysis.",
         )
 
-    return analyze_local_media(request.local_media_path, source_url, request.max_clips, processing_profile=request.processing_profile)
+    return analyze_local_media(request.local_media_path, source_url, request.max_clips, processing_profile=request.processing_profile, content_type=request.content_type, content_structure=request.content_structure, subject_hint=request.subject_hint)
 
 
 @app.post("/tasks/analyze-upload", response_model=TaskCreateResponse, status_code=202)
@@ -644,6 +710,9 @@ async def start_analyze_upload_task(
     file: UploadFile = File(...),
     max_clips: int = Form(default=6),
     processing_profile: str = Form(default="balanced"),
+    content_type: str = Form(default="auto"),
+    content_structure: str = Form(default="auto"),
+    subject_hint: str | None = Form(default=None),
 ):
     if max_clips < 1 or max_clips > 12:
         raise HTTPException(status_code=422, detail="max_clips must be between 1 and 12.")
@@ -669,17 +738,21 @@ async def start_analyze_upload_task(
     save_project(job_dir, {
         "job_id": job_id, "title": filename, "source_type": "upload",
         "clips": [], "status": "queued", "processing_profile": profile_name,
+        "content_type": normalize_content_type(content_type),
+        "content_structure": normalize_content_structure(content_structure),
+        "subject_hint": normalize_subject_hint(subject_hint),
     })
 
     def runner(task_id, cancel_event):
         return analyze_local_media(
             str(saved_path), filename, max_clips,
             job_id=job_id, project_title=filename, source_type="upload", processing_profile=profile_name,
+            content_type=content_type, content_structure=content_structure, subject_hint=subject_hint,
             progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
             cancel_event=cancel_event,
         )
 
-    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips})
+    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips, "content_type": normalize_content_type(content_type), "content_structure": normalize_content_structure(content_structure), "subject_hint": normalize_subject_hint(subject_hint)})
     return TaskCreateResponse(task_id=record["task_id"], job_id=job_id, status=record["status"])
 
 
@@ -693,6 +766,9 @@ async def start_analyze_youtube_task(
     author_name: str | None = Form(default=None),
     thumbnail_url: str | None = Form(default=None),
     processing_profile: str = Form(default="balanced"),
+    content_type: str = Form(default="auto"),
+    content_structure: str = Form(default="auto"),
+    subject_hint: str | None = Form(default=None),
 ):
     if not is_youtube_url(source_url):
         raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
@@ -727,6 +803,9 @@ async def start_analyze_youtube_task(
         "job_id": job_id, "title": title or filename, "source_type": "youtube", "source_url": source_url,
         "author_name": author_name, "thumbnail_url": thumbnail_url, "clips": [], "status": "queued",
         "processing_profile": profile_name,
+        "content_type": normalize_content_type(content_type),
+        "content_structure": normalize_content_structure(content_structure),
+        "subject_hint": normalize_subject_hint(subject_hint),
     })
 
     def runner(task_id, cancel_event):
@@ -734,11 +813,12 @@ async def start_analyze_youtube_task(
             str(saved_path), source_url, max_clips,
             job_id=job_id, project_title=title or filename, source_type="youtube",
             author_name=author_name, thumbnail_url=thumbnail_url, processing_profile=profile_name,
+            content_type=content_type, content_structure=content_structure, subject_hint=subject_hint,
             progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
             cancel_event=cancel_event,
         )
 
-    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips})
+    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips, "content_type": normalize_content_type(content_type), "content_structure": normalize_content_structure(content_structure), "subject_hint": normalize_subject_hint(subject_hint)})
     return TaskCreateResponse(task_id=record["task_id"], job_id=job_id, status=record["status"])
 
 
@@ -747,6 +827,9 @@ async def analyze_upload(
     file: UploadFile = File(...),
     max_clips: int = Form(default=6),
     processing_profile: str = Form(default="balanced"),
+    content_type: str = Form(default="auto"),
+    content_structure: str = Form(default="auto"),
+    subject_hint: str | None = Form(default=None),
 ):
     if max_clips < 1 or max_clips > 12:
         raise HTTPException(status_code=422, detail="max_clips must be between 1 and 12.")
@@ -785,6 +868,9 @@ async def analyze_upload(
         project_title=filename,
         source_type="upload",
         processing_profile=processing_profile,
+        content_type=content_type,
+        content_structure=content_structure,
+        subject_hint=subject_hint,
     )
 
 
@@ -806,6 +892,12 @@ def _project_summary(job_dir: Path, data: dict) -> ProjectSummary:
         storage_bytes=directory_size(job_dir),
         status=str(data.get("status") or "ready"),
         processing_profile=str(data.get("processing_profile") or "balanced"),
+        content_type=str(data.get("content_type") or "auto"),
+        resolved_content_type=str(data.get("resolved_content_type") or "other"),
+        content_structure=str(data.get("content_structure") or "auto"),
+        resolved_content_structure=str(data.get("resolved_content_structure") or "single-story"),
+        subject_hint=data.get("subject_hint"),
+        context_confidence=float(data.get("context_confidence") or 0.0),
     )
 
 
@@ -862,6 +954,9 @@ def resume_project(job_id: str):
             author_name=data.get("author_name"),
             thumbnail_url=data.get("thumbnail_url"),
             processing_profile=profile_name,
+            content_type=str(data.get("content_type") or "auto"),
+            content_structure=str(data.get("content_structure") or "auto"),
+            subject_hint=data.get("subject_hint"),
             progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
             cancel_event=cancel_event,
         )
@@ -974,6 +1069,9 @@ def export_package(job_id: str, clip_index: int, filename: str = Query(..., min_
         "source_type": data.get("source_type"),
         "render_filename": filename,
         "transcript_revision": int(data.get("transcript_revision", 0) or 0),
+        "content_type": data.get("resolved_content_type") or data.get("content_type") or "other",
+        "content_structure": data.get("resolved_content_structure") or data.get("content_structure") or "single-story",
+        "subject_hint": data.get("subject_hint"),
     }
     sidecar = media.with_suffix(".metadata.json")
     sidecar.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")

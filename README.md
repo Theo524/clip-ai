@@ -1,8 +1,24 @@
-# Clip AI v21 · Long-Term Beta
+# Clip AI v22 M2 · Smarter Clip Intelligence
 
-Clip AI turns long English-language videos into ranked, reframed, captioned, ready-to-post vertical Shorts. v21 is a reliability and editing release intended to be a stable local beta for an extended testing period.
+Clip AI turns long English-language videos into ranked, reframed, captioned, ready-to-post vertical Shorts. v22 is being delivered in guarded milestones. M2 changes **new local analyses** to select scene-local, more complete moments of flexible duration. The v21 render and recovery pipeline remains in place.
 
-## v21 highlights
+## v22 M2 highlights
+
+- Transcript pauses, local topic shifts and compilation cues divide the source into independent scenes. For anime, film and compilations, a bounded FFmpeg keyframe scan supplies optional shot cues; if it fails or times out, transcript segmentation still works. Dialogue cuts alone do not split a scene.
+- Candidates use genre-specific **soft** duration ranges, then extend to a sentence, answer, joke or payoff where possible. A cut after “but”, “because” or “and then” is rejected. An uncertain boundary is flagged.
+- Ranking weighs standalone context, story completeness, hook, payoff, speech quality and transcript confidence. When shot sampling succeeds, frequent cuts also reduce visual suitability slightly and flag the framing for review. Best 3 favor different strong scenes. Remaining distinct candidates support **Replace suggestion**, with no new transcription or analysis. Restore top picks returns to the original selection; replacements on the results page are session-only.
+- Each new candidate records its scene bounds, moment type and quality warnings. A local context window cannot reach across a detected scene boundary. The subject field remains a hint, never a claim about an unrelated compilation scene.
+- Existing saved M1 projects and edits keep their recommendations when reopened or resumed. To compare the M2 selector on that source, create a new analysis; cached transcription may be reused.
+- OpenAI ranking remains its existing path; M2 scoring and scene-local selection apply to the default **local** ranking backend. Visual framing/caption intelligence and social copy generation remain for later milestones.
+
+## M1 context foundation retained
+
+### Content context
+Before analysis you can leave **Auto** selected or give Clip AI a content type, source structure and optional show/program/subject hint. Auto remains conservative. The resolved context is stored with the project and each candidate.
+
+Compilation context is local by design: a show/topic hint may help future names and framing decisions, but does not tell Clip AI that every segment of a compilation is the same event.
+
+## v21 foundation retained
 
 ### Recoverable long-video processing
 - Persistent task history survives worker restarts.
@@ -58,9 +74,32 @@ Run `START_CLIP_AI.bat` from the project root. It checks the main local prerequi
 
 For a quick prerequisite check without starting the app, run `CHECK_CLIP_AI.bat`.
 
-## Manual startup
+## Windows installation and startup
 
-### Worker
+### Update an existing Windows M1 installation
+
+Close the worker and web Command Prompt windows first. Save the M2 ZIP as
+`C:\Users\PC\Downloads\clip-ai-v22-m2-smarter-clips.zip`, then open **Command Prompt** and run:
+
+```bat
+cd /d C:\Users\PC\Downloads
+tar -xf "clip-ai-v22-m2-smarter-clips.zip"
+xcopy "C:\Users\PC\Downloads\clip-ai-starter-v22-m2\*" "C:\Users\PC\Downloads\clip-ai-starter" /E /I /Y
+cd /d C:\Users\PC\Downloads\clip-ai-starter\apps\worker
+.venv\Scripts\activate
+pip install -r requirements.txt
+cd /d C:\Users\PC\Downloads\clip-ai-starter\apps\web
+npm install
+npm run build
+cd /d C:\Users\PC\Downloads\clip-ai-starter
+START_CLIP_AI.bat
+```
+
+The ZIP contains source, tests and documentation only; copying it over the
+installation retains your local `.env`, worker `.venv`, saved projects and media.
+If `npm run build` fails on Windows, record the exact error before testing M2.
+
+### Manual worker startup
 ```bat
 cd /d C:\Users\PC\Downloads\clip-ai-starter\apps\worker
 .venv\Scripts\activate
@@ -68,7 +107,7 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
-### Web app
+### Manual web app startup
 ```bat
 cd /d C:\Users\PC\Downloads\clip-ai-starter\apps\web
 npm run dev
@@ -93,7 +132,7 @@ MIN_FREE_DISK_GB=2.0
 
 ## Tests
 
-v21 currently ships with **46 passing backend tests**, including persistence/migration, transcription recovery, processing profiles, subtitle exports, ranking/render behavior and reliability checks. Core frontend TSX files also pass a TypeScript transpilation/syntax check.
+v22 M2 ships with **58 passing backend tests**, including compilation boundaries, natural endings, variable duration, scene diversity and quality warnings along with the M1/v21 regression tests. Frontend TypeScript checking (`tsc --noEmit`) passes. This workspace could not complete Next's production build because its process runner returned `ENOENT: uv_resident_set_memory`; run `npm run build` on Windows before considering M2 fully validated.
 
 ## Current boundary
 
