@@ -3,7 +3,7 @@ from functools import lru_cache
 from models import TranscriptSegment, TranscriptWord
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=1)
 def _load_local_model(model_name: str, device: str, compute_type: str, cpu_threads: int = 4):
     try:
         from faster_whisper import WhisperModel

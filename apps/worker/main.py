@@ -1,6 +1,7 @@
 from pathlib import Path
 from concurrent.futures import CancelledError
 import json
+import gc
 import importlib.util
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -32,7 +33,7 @@ from services.transcript_cache import load_cached_transcript, save_cached_transc
 from services.context import candidate_context, normalize_content_structure, normalize_content_type, normalize_subject_hint, resolve_content_context
 from services.smart_rank import RANKING_VERSION, detect_shot_boundaries, rank_clip_candidates_m2
 
-APP_VERSION = "22.0.0-m2"
+APP_VERSION = "22.0.0-m2.1"
 RELEASE_NAME = "Smarter Clip Intelligence"
 
 app = FastAPI(title="Clip AI Worker", version=APP_VERSION)
@@ -162,6 +163,92 @@ def _transcription_strategy() -> str:
     if backend == "local":
         return f"local:{settings.local_whisper_model}:{settings.local_whisper_compute_type}:word-v20.1"
     return f"openai:{settings.openai_transcribe_model}:word-v20.1"
+
+
+def _is_memory_allocation_error(exc: BaseException) -> bool:
+    """Recognize NumPy/faster-whisper allocation failures without importing NumPy internals."""
+    if isinstance(exc, MemoryError):
+        return True
+    name = exc.__class__.__name__.lower()
+    text = str(exc).lower()
+    return (
+        "arraymemoryerror" in name
+        or "unable to allocate" in text
+        or "cannot allocate memory" in text
+        or "out of memory" in text
+    )
+
+
+def _transcribe_chunk_memory_safe(
+    chunk_path: str,
+    offset_seconds: float,
+    *,
+    vad_filter: bool,
+    cpu_threads: int,
+    split_seconds: int = 120,
+    cancel_event=None,
+    on_fallback=None,
+):
+    """Transcribe a chunk and automatically retry NumPy STFT OOMs in smaller pieces.
+
+    faster-whisper's NumPy STFT creates a temporary complex array proportional to
+    audio duration. On memory-constrained Windows machines even a few-minute chunk
+    can fail while the model, browser and web server are resident. Splitting only the
+    failing chunk keeps timestamps accurate and avoids restarting the whole analysis.
+    """
+    try:
+        return _transcribe_chunk(
+            chunk_path,
+            offset_seconds=offset_seconds,
+            vad_filter=vad_filter,
+            cpu_threads=cpu_threads,
+        )
+    except Exception as exc:
+        if settings.transcription_backend.lower().strip() != "local" or not _is_memory_allocation_error(exc):
+            raise
+
+        gc.collect()
+        seconds = max(30, min(int(split_seconds), 120))
+        if on_fallback is not None:
+            on_fallback(seconds)
+
+        source = Path(chunk_path)
+        fallback_dir = source.parent / f"{source.stem}_memory_safe_{seconds}s"
+        if fallback_dir.exists():
+            shutil.rmtree(fallback_dir, ignore_errors=True)
+        fallback_chunks = extract_audio_chunks(
+            str(source),
+            str(fallback_dir),
+            chunk_seconds=seconds,
+            cancel_event=cancel_event,
+        )
+
+        # If the smallest safe split still cannot reduce the input, surface a useful
+        # message instead of recursively retrying forever.
+        if len(fallback_chunks) <= 1 and seconds <= 30:
+            raise RuntimeError(
+                "Clip AI ran out of available RAM while preparing Whisper audio. "
+                "Close memory-heavy apps, choose Low memory, and try again."
+            ) from exc
+
+        recovered: list[TranscriptSegment] = []
+        next_split = max(30, seconds // 2)
+        for index, subchunk in enumerate(fallback_chunks):
+            if cancel_event is not None and cancel_event.is_set():
+                raise CancelledError()
+            recovered.extend(
+                _transcribe_chunk_memory_safe(
+                    subchunk,
+                    offset_seconds + index * seconds,
+                    vad_filter=vad_filter,
+                    cpu_threads=cpu_threads,
+                    split_seconds=next_split,
+                    cancel_event=cancel_event,
+                    on_fallback=on_fallback,
+                )
+            )
+            gc.collect()
+        return recovered
 
 
 def _eta_text(seconds: float) -> str:
@@ -325,25 +412,40 @@ def analyze_local_media(
                     suffix = f" · {_eta_text(average * (total_chunks - index))}"
                 notify(pct, "Transcribing", f"Chunk {index + 1} of {total_chunks}{suffix}")
                 started = time.monotonic()
-                chunk_segments = _transcribe_chunk(
+                def memory_fallback(split_seconds: int) -> None:
+                    notify(
+                        pct,
+                        "Reducing memory use",
+                        f"Whisper needed more RAM. Retrying chunk {index + 1} in {split_seconds}-second pieces…",
+                    )
+
+                chunk_segments = _transcribe_chunk_memory_safe(
                     chunk_path,
                     offset_seconds=index * effective_chunk_seconds,
                     vad_filter=True,
                     cpu_threads=profile.cpu_threads,
+                    split_seconds=min(120, max(60, effective_chunk_seconds // 2)),
+                    cancel_event=cancel_event,
+                    on_fallback=memory_fallback,
                 )
                 # VAD is excellent for speed but can reject quiet film dialogue/music-heavy
                 # mixes. An empty chunk gets one automatic full-audio retry.
                 if not chunk_segments and settings.transcription_backend.lower().strip() == "local":
                     notify(pct, "Retrying quiet audio", f"Chunk {index + 1} looked silent. Retrying without the speech filter…")
                     check_cancel()
-                    chunk_segments = _transcribe_chunk(
+                    chunk_segments = _transcribe_chunk_memory_safe(
                         chunk_path,
                         offset_seconds=index * effective_chunk_seconds,
                         vad_filter=False,
                         cpu_threads=profile.cpu_threads,
+                        split_seconds=min(120, max(60, effective_chunk_seconds // 2)),
+                        cancel_event=cancel_event,
+                        on_fallback=memory_fallback,
                     )
                 chunk_times.append(max(0.01, time.monotonic() - started))
                 segments.extend(chunk_segments)
+                del chunk_segments
+                gc.collect()
                 completed_pct = 18 + int(((index + 1) / total_chunks) * 46)
                 if index + 1 < total_chunks:
                     average = sum(chunk_times) / len(chunk_times)

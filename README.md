@@ -1,6 +1,6 @@
-# Clip AI v22 M2 · Smarter Clip Intelligence
+# Clip AI v22 M2.1 · Smarter Clip Intelligence + Memory Safety
 
-Clip AI turns long English-language videos into ranked, reframed, captioned, ready-to-post vertical Shorts. v22 is being delivered in guarded milestones. M2 changes **new local analyses** to select scene-local, more complete moments of flexible duration. The v21 render and recovery pipeline remains in place.
+Clip AI turns long English-language videos into ranked, reframed, captioned, ready-to-post vertical Shorts. v22 is being delivered in guarded milestones. M2.1 keeps M2 clip intelligence and patches local Whisper memory pressure seen on 8 GB Windows PCs. The v21 render and recovery pipeline remains in place.
 
 ## v22 M2 highlights
 
@@ -36,9 +36,11 @@ Compilation context is local by design: a show/topic hint may help future names 
 
 ### Processing profiles
 Choose one per project:
-- **Low memory** — smaller chunks and fewer CPU threads for constrained machines.
-- **Balanced** — recommended default.
-- **Fast** — larger chunks/more CPU threads when the machine has headroom.
+- **Low memory** — 3-minute transcription chunks and fewer CPU threads for constrained machines.
+- **Balanced** — 5-minute chunks; recommended default.
+- **Fast** — 10-minute chunks/more CPU threads when the machine has headroom.
+
+If NumPy/faster-whisper still reports an allocation error, M2.1 automatically re-splits only the failing chunk into smaller pieces and continues with the correct timeline offset.
 
 The default remains lightweight English-only `tiny.en` on CPU.
 
@@ -132,7 +134,7 @@ MIN_FREE_DISK_GB=2.0
 
 ## Tests
 
-v22 M2 ships with **58 passing backend tests**, including compilation boundaries, natural endings, variable duration, scene diversity and quality warnings along with the M1/v21 regression tests. Frontend TypeScript checking (`tsc --noEmit`) passes. This workspace could not complete Next's production build because its process runner returned `ENOENT: uv_resident_set_memory`; run `npm run build` on Windows before considering M2 fully validated.
+v22 M2.1 ships with the M2 suite plus memory-pressure regression tests, including compilation boundaries, natural endings, variable duration, scene diversity and quality warnings along with the M1/v21 regression tests. Frontend TypeScript checking (`tsc --noEmit`) passes. This workspace could not complete Next's production build because its process runner returned `ENOENT: uv_resident_set_memory`; run `npm run build` on Windows before considering M2 fully validated.
 
 ## Current boundary
 

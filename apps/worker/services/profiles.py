@@ -15,24 +15,24 @@ class ProcessingProfile:
 PROFILES = {
     "low-memory": ProcessingProfile(
         name="low-memory",
-        chunk_seconds=300,
+        chunk_seconds=180,
         cpu_threads=2,
         render_preset="veryfast",
-        description="Small chunks and fewer CPU threads for 8 GB or busy PCs.",
+        description="Very small chunks and fewer CPU threads for 8 GB or busy PCs.",
     ),
     "balanced": ProcessingProfile(
         name="balanced",
-        chunk_seconds=600,
+        chunk_seconds=300,
         cpu_threads=4,
         render_preset="veryfast",
-        description="Recommended balance of speed, memory and reliability.",
+        description="Recommended default with memory-safe 5 minute transcription chunks.",
     ),
     "fast": ProcessingProfile(
         name="fast",
-        chunk_seconds=1200,
+        chunk_seconds=600,
         cpu_threads=6,
         render_preset="faster",
-        description="Larger chunks for higher-memory desktops.",
+        description="Larger chunks for desktops with comfortable memory headroom.",
     ),
 }
 

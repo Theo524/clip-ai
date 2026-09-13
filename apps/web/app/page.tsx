@@ -704,7 +704,7 @@ export default function Home() {
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
-          <div className="badge">v22 · M2 smarter clips</div>
+          <div className="badge">v22 · M2.1 memory-safe</div>
         </div>
       </nav>
 

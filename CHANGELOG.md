@@ -1,5 +1,14 @@
 # Changelog
 
+## 22.0.0-M2.1 · Memory-safe transcription patch
+
+- Fixes the Windows/NumPy `Unable to allocate ... complex128` failure seen during faster-whisper feature extraction on memory-constrained PCs.
+- Balanced now uses 5-minute audio chunks; Low memory uses 3-minute chunks; Fast uses 10-minute chunks.
+- If a local Whisper chunk still hits a NumPy allocation error, Clip AI automatically retries only that chunk in progressively smaller pieces instead of failing the whole analysis.
+- Keeps only one loaded local Whisper model in the in-process cache so switching processing profiles cannot leave two full models resident.
+- Adds explicit regression tests for the exact 141 MiB allocation failure shape reported during M2 testing.
+- M2 scene-local ranking, flexible duration, Best 3 diversity, replacement suggestions and the v21 render pipeline are otherwise unchanged.
+
 ## 22.0.0-M2 · Smarter Clip Intelligence
 
 - New local selector favors complete thoughts over a fixed short-form duration; provides content-type soft length guides and ending checks.
