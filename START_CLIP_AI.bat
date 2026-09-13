@@ -2,7 +2,7 @@
 setlocal
 cd /d "%~dp0"
 
-echo Clip AI v22 - Long-Term Beta Freeze
+echo Clip AI v23 - Narrative Intelligence 2.0
 echo.
 where ffmpeg >nul 2>nul || (echo [ERROR] FFmpeg is not on PATH.& pause & exit /b 1)
 where ffprobe >nul 2>nul || (echo [ERROR] FFprobe is not on PATH.& pause & exit /b 1)

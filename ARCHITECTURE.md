@@ -12,7 +12,7 @@ Next.js web app
   ├─ Projects search/filter/resume
   └─ System + redacted diagnostics
              ↓
-FastAPI worker 22.0.0-m4
+FastAPI worker 23.0.0-beta.1
              ↓
 media preflight + disk guard
              ↓
@@ -105,3 +105,8 @@ Auto anime rendering uses `preserve`, which scales the whole source frame into t
 - When multiple audio tracks exist, the selected stream is normalized into the stable H.264/AAC working copy so transcription and later rendering stay consistent.
 - Per-project cleanup can discard source/normalized media only after a finished render exists. Transcript, metadata, final renders, covers and export packages are durable.
 - The cross-project transcript cache is disposable and bounded; per-project transcript checkpoints are durable.
+
+
+## v23 M1 narrative ranking
+
+The local ranker remains transcript-first and scene-local, but candidate endpoints now pass a narrative assessment. Strongly incomplete question/setup/payoff boundaries are skipped and generation continues within the same scene. Narrative extension cannot cross scene boundaries. `Narrative` is exposed in `score_breakdown`; candidate context stores completeness/continuation values for diagnostics.

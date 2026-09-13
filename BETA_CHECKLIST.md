@@ -1,4 +1,4 @@
-# Clip AI v22 Long-Term Beta freeze checklist
+# Clip AI v23 Narrative Intelligence beta checklist
 
 Use this before calling M6 stable on Windows.
 
@@ -44,3 +44,11 @@ Use this before calling M6 stable on Windows.
 - [ ] SRT/VTT export works.
 - [ ] Export package contains MP4 + subtitle files + metadata + cover where available.
 - [ ] Old v21/v22 projects migrate to schema 24 without losing renders/transcript.
+
+## v23 M1 narrative checks
+
+- [ ] Anime dialogue does not end just before the reply/payoff.
+- [ ] Documentary explanations can run longer than the normal guide when the conclusion needs it.
+- [ ] Complete short comedy/punchline clips are not padded.
+- [ ] Compilation candidates never cross into the next detected scene/topic.
+- [ ] “Why this clip?” shows a Narrative score.

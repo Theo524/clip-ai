@@ -21,7 +21,34 @@ DURATION_GUIDES = {
     "podcast": (20, 60), "documentary": (25, 75), "gameplay": (15, 50),
     "other": (12, 60),
 }
-RANKING_VERSION = "m5-duration-v1"
+RANKING_VERSION = "v23-narrative-v1"
+
+
+NARRATIVE_CLOSURE_CUES = tuple(dict.fromkeys((*PAYOFF_PHRASES,
+    "finally", "ultimately", "therefore", "that was it", "that's the point",
+    "that is the point", "in other words", "so the answer", "which is why",
+)))
+
+STRONG_CONTINUATION_STARTS = (
+    "because ", "that's because", "that is because", "the answer ", "the reason ",
+    "that's why", "that is why", "turns out", "which means", "which is why",
+    "and then", "but then", "however", "until ", "eventually", "finally",
+)
+
+RESPONSE_STARTS = (
+    "yes ", "no ", "yeah ", "exactly", "right ", "because ", "that's because",
+    "that is because", "of course", "not really", "actually ",
+)
+
+OPEN_LOOP_PATTERNS = (
+    r"\bthe reason (?:is|was)?\s*$",
+    r"\bwhat happened (?:next|was|is)?\s*$",
+    r"\bthe problem (?:is|was)?\s*$",
+    r"\bthe question (?:is|was)?\s*$",
+    r"\band then\s*$",
+    r"\bbut then\s*$",
+    r"\buntil\s*$",
+)
 
 
 def duration_bounds(content_type: str, preference: str = "auto") -> tuple[int, int]:
@@ -143,6 +170,144 @@ def _ending_quality(segment: TranscriptSegment, next_segment: TranscriptSegment 
     return 1 if pause >= 0.6 or next_segment is None else 0
 
 
+def _starts_with_any(text: str, phrases: tuple[str, ...]) -> bool:
+    lower = _clean(text).lower().lstrip('"“‘')
+    return any(lower.startswith(phrase) for phrase in phrases)
+
+
+def _has_closure(text: str) -> bool:
+    lower = _clean(text).lower()
+    return any(cue in lower for cue in NARRATIVE_CLOSURE_CUES)
+
+
+def _open_loop_near_end(text: str) -> bool:
+    lower = _clean(text).lower().rstrip(' .!?…"”’')
+    tail = lower[-180:]
+    if any(re.search(pattern, tail) for pattern in OPEN_LOOP_PATTERNS):
+        return True
+    # A late pivot normally needs the consequence/payoff that follows it.
+    last_third = lower[max(0, int(len(lower) * .66)):]
+    return any(cue in last_third for cue in ("but ", "however", "until ", "the problem was", "turns out")) and not _has_closure(last_third)
+
+
+def _opening_context_penalty(segments: list[TranscriptSegment], start_index: int, scene_first: int) -> tuple[int, list[str]]:
+    if start_index <= scene_first:
+        return 0, []
+    opening = _clean(segments[start_index].text).lower().lstrip('"“‘')
+    previous = segments[start_index - 1]
+    gap = max(0.0, segments[start_index].start - previous.end)
+    penalty = 0
+    reasons: list[str] = []
+    first_words = _words(opening[:90])
+    first = first_words[0] if first_words else ""
+    if _starts_with_any(opening, RESPONSE_STARTS) and gap < 2.0:
+        penalty += 28
+        reasons.append("Starts like a reply without the setup")
+    elif first in {"he", "she", "they", "it", "this", "that", "these", "those", "him", "her", "them"} and gap < 1.5:
+        penalty += 18
+        reasons.append("Opening depends on earlier context")
+    elif not _starts_clean(segments[start_index].text) and gap < 1.2:
+        penalty += 15
+        reasons.append("Opening is grammatically dependent")
+    if previous.text.rstrip().endswith("?") and gap < 2.0:
+        penalty += 18
+        reasons.append("Answer needs the preceding question")
+    return min(45, penalty), reasons
+
+
+def _narrative_assessment(segments: list[TranscriptSegment], start_index: int, end_index: int, scene: Scene) -> tuple[int, int, list[str], list[str]]:
+    """Return (completeness, continuation_level, strengths, warnings).
+
+    continuation_level: 0 = natural stop, 1 = probably continues, 2 = strongly incomplete.
+    This is deliberately heuristic and local: it protects story boundaries without
+    forcing every clip to become longer.
+    """
+    start_seg = segments[start_index]
+    end_seg = segments[end_index]
+    following = segments[end_index + 1] if end_index < scene.last else None
+    text = _clean(" ".join(s.text for s in segments[start_index:end_index + 1]))
+    lower = text.lower()
+    strengths: list[str] = []
+    warnings: list[str] = []
+    score = 88
+
+    opening_penalty, opening_reasons = _opening_context_penalty(segments, start_index, scene.first)
+    score -= opening_penalty
+    warnings.extend(opening_reasons)
+    if opening_penalty == 0:
+        strengths.append("Enough setup to understand the moment")
+
+    continuation = 0
+    gap_after = max(0.0, following.start - end_seg.end) if following else 10.0
+    next_lower = _clean(following.text).lower().lstrip('"“‘') if following else ""
+
+    if _unfinished(end_seg.text):
+        continuation = 2
+        score -= 38
+        warnings.append("Sentence or thought is unfinished")
+    elif end_seg.text.rstrip().endswith("?") and following and gap_after < 2.2:
+        continuation = 2
+        score -= 34
+        warnings.append("Question is answered immediately after the cut")
+    elif _open_loop_near_end(text) and following and gap_after < 2.2:
+        continuation = 2
+        score -= 30
+        warnings.append("Setup or story turn has not paid off yet")
+    elif following and gap_after < 1.5 and _starts_with_any(next_lower, STRONG_CONTINUATION_STARTS):
+        # If the very next line carries the answer/consequence, prefer including it.
+        continuation = 2 if not _has_closure(text[-220:]) else 1
+        score -= 26 if continuation == 2 else 12
+        warnings.append("The next line contains the immediate payoff")
+    elif following and gap_after < .55 and not _starts_clean(following.text):
+        continuation = 1
+        score -= 9
+        warnings.append("Dialogue appears to continue immediately")
+
+    # If a clear payoff already happened well before the end and the tail adds no
+    # new turn, lightly penalize the overhang. This keeps complete 15–25 s moments
+    # short instead of stretching them just because more dialogue exists.
+    closure_positions = [lower.rfind(cue) for cue in NARRATIVE_CLOSURE_CUES if cue in lower]
+    last_closure = max(closure_positions) if closure_positions else -1
+    if last_closure >= 0:
+        trailing_fraction = (len(lower) - last_closure) / max(1, len(lower))
+        if trailing_fraction <= .30:
+            score += 8
+            strengths.append("Ends close to the payoff")
+        elif trailing_fraction > .48 and not _open_loop_near_end(text):
+            score -= 8
+            warnings.append("Extra dialogue continues after the main payoff")
+    elif continuation == 0 and (_ending_quality(end_seg, following) >= 2 or gap_after >= .8):
+        score += 4
+        strengths.append("Natural stopping point")
+
+    # Questions earlier in the candidate are fine only when some answer/conclusion
+    # follows within the same candidate.
+    question_pos = lower.rfind("?")
+    if question_pos >= int(len(lower) * .45):
+        answer_tail = lower[question_pos + 1:]
+        if len(_words(answer_tail)) < 7 and following and gap_after < 2.0:
+            continuation = max(continuation, 2)
+            score -= 24
+            warnings.append("Late question needs its answer")
+
+    # Short reaction/punchline clips can be genuinely complete; don't punish them
+    # merely for being short when they have a clean payoff and pause.
+    if continuation == 0 and _has_closure(text) and gap_after >= .35:
+        score += 4
+
+    return max(1, min(99, round(score))), continuation, list(dict.fromkeys(strengths)), list(dict.fromkeys(warnings))
+
+
+def _candidate_duration_cap(content_type: str, preference: str, high: int) -> float:
+    pref = (preference or "auto").lower().strip()
+    if pref == "short":
+        return min(90.0, high + 18.0)
+    extra = 45.0 if content_type in {"anime", "film-tv", "documentary", "podcast"} else 35.0
+    if pref == "longer":
+        extra += 20.0
+    return min(145.0, high + extra)
+
+
 def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
                             context: ContentContext, *, shot_boundaries: list[float] | tuple[float, ...] = (),
                             duration_preference: str = "auto") -> list[ClipCandidate]:
@@ -164,17 +329,19 @@ def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
             for end_index in range(start_index, min(scene.last + 1, start_index + 38)):
                 end_seg = segments[end_index]
                 duration = end_seg.end - start_seg.start
-                if duration > min(145, high + 25):
+                if duration > _candidate_duration_cap(context.resolved_type, duration_preference, high):
                     break
                 text_parts.append(end_seg.text)
                 if duration < max(5.0, low - 5):
                     continue
                 following = segments[end_index + 1] if end_index < scene.last else None
                 ending_quality = _ending_quality(end_seg, following)
-                if ending_quality < 1:
-                    continue
-                # A question isn't an ending if the answer immediately follows.
-                if end_seg.text.rstrip().endswith("?") and following and following.start - end_seg.end < 2.0:
+                narrative, continuation_level, narrative_strengths, narrative_warnings = _narrative_assessment(
+                    segments, start_index, end_index, scene
+                )
+                # Strongly incomplete candidates are not emitted yet. The loop keeps
+                # extending until the answer/payoff or a real scene boundary arrives.
+                if ending_quality < 1 or continuation_level >= 2:
                     continue
                 text = _clean(" ".join(text_parts))
                 if len(_words(text)) < 9 and duration > 15:
@@ -186,14 +353,17 @@ def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
                 complete_start = _starts_clean(start_seg.text) or start_index == scene.first
                 payoff = any(phrase in text.lower() for phrase in PAYOFF_PHRASES)
                 turn = any(phrase in text.lower() for phrase in PIVOT_PHRASES)
-                story = min(98, 40 + (18 if complete_start else 0) + 20 * ending_quality // 2
-                            + (12 if payoff else 0) + (8 if turn else 0))
+                story = min(99, round(0.72 * narrative + 0.28 * (
+                    40 + (18 if complete_start else 0) + 20 * ending_quality // 2
+                    + (12 if payoff else 0) + (8 if turn else 0)
+                )))
                 hook = any(phrase in start_seg.text.lower()[:110] for phrase in HOOK_PHRASES)
                 # The old length reward must not force every result into 24–48 s.
                 old_length_bias = 15 if 24 <= duration <= 48 else 8 if 18 <= duration <= 60 else -min(18, abs(duration - 36) * .65)
-                score = 0.42 * (old_score - old_length_bias * .62) + 0.58 * (
-                    breakdown["Hook"] * .20 + breakdown["Standalone"] * .18
-                    + breakdown["Payoff"] * .22 + breakdown["Clarity"] * .12 + story * .28)
+                score = 0.38 * (old_score - old_length_bias * .62) + 0.62 * (
+                    breakdown["Hook"] * .17 + breakdown["Standalone"] * .15
+                    + breakdown["Payoff"] * .18 + breakdown["Clarity"] * .10
+                    + story * .16 + narrative * .24)
                 if duration < low:
                     score -= min(10, (low - duration) * .8)
                 elif duration > high:
@@ -202,16 +372,21 @@ def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
                     score -= 10
                 if ending_quality == 1:
                     score -= 8
+                if continuation_level == 1:
+                    score -= 7
+                if narrative >= 88:
+                    reasons = ["Narratively complete moment", *reasons]
+                reasons = [*narrative_strengths, *reasons]
                 if payoff:
                     reasons = ["Complete payoff or takeaway", *reasons]
                 if hook:
                     reasons = ["Strong opening hook", *reasons]
-                warnings = []
+                warnings = list(narrative_warnings)
                 if ending_quality == 1:
                     warnings.append("Ending boundary is uncertain")
                 if not complete_start:
                     warnings.append("Opening may need more context")
-                if not payoff and not turn:
+                if not payoff and not turn and narrative < 78:
                     warnings.append("Story completeness may be limited")
                 confidence = _confidence(segments[start_index:end_index + 1])
                 if confidence is not None and confidence < .55:
@@ -230,11 +405,13 @@ def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
                     title="", social_caption="",
                     hook=_first_sentence(text), score=max(1, min(98, round(score))),
                     reasons=list(dict.fromkeys(reasons))[:4] or ["Complete local moment"],
-                    score_breakdown={**breakdown, "Story": story}, editor_note=note,
+                    score_breakdown={**breakdown, "Story": story, "Narrative": narrative}, editor_note=note,
                     context={"moment_type": _moment_type(text), "scene_id": scene_id,
                              "scene_start": round(scene_start, 3), "scene_end": round(scene_end, 3),
                              "quality_warnings": warnings, "shot_changes": cuts if shot_times else None,
                              "duration_preference": (duration_preference or "auto"),
+                             "narrative_completeness": narrative,
+                             "narrative_continuation": continuation_level,
                              "transcript_confidence": round(confidence, 3) if confidence is not None else None},
                 )
                 candidates.append((clip, scene_id, text))

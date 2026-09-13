@@ -1,5 +1,17 @@
 # Changelog
 
+## 23.0.0-beta.1 · Narrative Intelligence 2.0
+
+- Adds narrative-completeness scoring as a first-class ranking dimension.
+- Extends clips when a question, setup, pivot or immediate payoff would otherwise be cut off.
+- Penalizes openings that depend on missing setup, including reply/pronoun-only starts.
+- Avoids padding already-complete short moments simply because more dialogue follows.
+- Allows longer anime/film/podcast/documentary candidates only when the narrative needs it.
+- Keeps scene/compilation boundaries hard: context extension never crosses into the next detected scene.
+- Exposes `Narrative` in the existing score breakdown and stores narrative completeness in candidate metadata.
+- Ranking checkpoint version changed so saved v22 candidates are safely re-ranked once under v23 logic.
+- 98 backend tests pass.
+
 ## 22.0.0-beta.1 · M6 Long-Term Beta Freeze
 
 - Added user-selectable audio tracks for dual-audio/multilingual sources; Auto follows the source default track.
@@ -34,7 +46,6 @@
 - Existing burned-in subtitle detection can still move captions upward when overlap would be likely.
 - M4 calmer tracking, scene-cut resets, saliency fallback, and M1-M3 intelligence remain unchanged.
 
-# Changelog
 
 ## 22.0.0-M4.1 · Anime framing hotfix
 

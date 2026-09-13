@@ -1031,7 +1031,7 @@ export default function Home() {
                 <span><b>Structure</b>{contentStructureLabel(result.clips[0].context?.content_structure)}</span>
                 {result.clips[0].context?.subject_hint && <span><b>Hint</b>{result.clips[0].context?.subject_hint}</span>}
                 <span><b>Length</b>{durationPreference === "auto" ? "Auto" : durationPreference === "short" ? "Short" : durationPreference === "longer" ? "Longer story" : "Balanced"}</span>
-                <small>Natural endings stay protected; the length preference only nudges ranking toward quicker or more complete story clips.</small>
+                <small>Clip AI now checks setup, question/answer flow and payoff before choosing a boundary; length remains a preference, not a forced target.</small>
               </div>
             )}
 
@@ -1041,7 +1041,7 @@ export default function Home() {
                   <div>
                     <span className="bestEyebrow">AI EDITOR PICKS</span>
                     <h3>Best 3 moments</h3>
-                    <p>Different scenes, natural starts and complete endings matter alongside the hook. You can replace a pick without analyzing again.</p>
+                    <p>Different scenes, necessary setup and complete payoffs matter alongside the hook. You can replace a pick without analyzing again.</p>
                   </div>
                   <div className="bestRenderModes">
                     <button className="restorePicksButton" type="button" onClick={() => bestIndices[0] !== undefined && renderMedia(result.clips[bestIndices[0]], bestIndices[0], "short")} disabled={rendering !== null || batchRendering !== null}>Render #1 only</button>

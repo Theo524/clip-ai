@@ -13,17 +13,17 @@ def test_safe_download_name():
     assert safe_download_name("", "short_v9_123") == "short_v9_123.mp4"
 
 
-def test_v22_m1_preflight_metadata():
+def test_v23_m1_preflight_metadata():
     from main import APP_VERSION, RELEASE_NAME, _system_preflight
 
     data = _system_preflight()
-    assert APP_VERSION.startswith("22.")
+    assert APP_VERSION.startswith("23.")
     assert data.version == APP_VERSION
     assert data.release == RELEASE_NAME
     assert {item.id for item in data.checks} >= {"ffmpeg", "ffprobe", "workspace", "transcription", "ranking", "disk"}
 
 
-def test_v22_m1_preflight_has_storage_numbers():
+def test_v23_m1_preflight_has_storage_numbers():
     from main import _system_preflight
 
     data = _system_preflight()
