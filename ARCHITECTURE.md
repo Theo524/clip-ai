@@ -12,7 +12,7 @@ Next.js web app
   ├─ Projects search/filter/resume
   └─ System + redacted diagnostics
              ↓
-FastAPI worker 23.0.0-beta.1
+FastAPI worker 23.0.0-beta.3
              ↓
 media preflight + disk guard
              ↓

@@ -127,7 +127,6 @@ type CopyStyle = "auto" | "viral" | "clean" | "cinematic";
 type ProcessingProfile = "low-memory" | "balanced" | "fast";
 type ContentType = "auto" | "podcast" | "anime" | "film-tv" | "documentary" | "meme-comedy" | "gameplay" | "other";
 type ContentStructure = "auto" | "single-story" | "compilation" | "conversation";
-type DurationPreference = "auto" | "short" | "balanced" | "longer";
 
 type RenderResponse = {
   job_id: string;
@@ -298,8 +297,6 @@ export default function Home() {
   const [contentType, setContentType] = useState<ContentType>("auto");
   const [contentStructure, setContentStructure] = useState<ContentStructure>("auto");
   const [subjectHint, setSubjectHint] = useState("");
-  const [durationPreference, setDurationPreference] = useState<DurationPreference>("auto");
-  const [audioTrack, setAudioTrack] = useState(0);
   const [projectNotes, setProjectNotes] = useState("");
   const [projectNotesSaved, setProjectNotesSaved] = useState(false);
   const [previews, setPreviews] = useState<Record<number, RenderResponse>>({});
@@ -375,8 +372,6 @@ export default function Home() {
       if (["auto", "podcast", "anime", "film-tv", "documentary", "meme-comedy", "gameplay", "other"].includes(data.content_type || "")) setContentType((data.content_type || "auto") as ContentType);
       if (["auto", "single-story", "compilation", "conversation"].includes(data.content_structure || "")) setContentStructure((data.content_structure || "auto") as ContentStructure);
       setSubjectHint(data.subject_hint || "");
-      if (["auto", "short", "balanced", "longer"].includes(data.duration_preference || "")) setDurationPreference((data.duration_preference || "auto") as DurationPreference);
-      setAudioTrack(Number(data.audio_track || 0));
       setProjectNotes(data.project_notes || "");
       setProjectNotesSaved(false);
       setPreviews({});
@@ -420,8 +415,6 @@ export default function Home() {
       form.append("processing_profile", processingProfile);
       form.append("content_type", contentType);
       form.append("content_structure", contentStructure);
-      form.append("duration_preference", durationPreference);
-      form.append("audio_track", String(audioTrack));
       if (subjectHint.trim()) form.append("subject_hint", subjectHint.trim());
       window.localStorage.setItem("clip-ai-processing-profile", processingProfile);
       const res = await fetch(`${workerUrl}/tasks/analyze-upload`, { method: "POST", body: form });
@@ -489,8 +482,6 @@ export default function Home() {
       form.append("processing_profile", processingProfile);
       form.append("content_type", contentType);
       form.append("content_structure", contentStructure);
-      form.append("duration_preference", durationPreference);
-      form.append("audio_track", String(audioTrack));
       if (subjectHint.trim()) form.append("subject_hint", subjectHint.trim());
       window.localStorage.setItem("clip-ai-processing-profile", processingProfile);
       form.append("title", youtubeInfo.title);
@@ -836,7 +827,7 @@ export default function Home() {
               </label>
               <div className="contextPanel">
                 <div className="contextPanelHead">
-                  <span><strong>Content context</strong><small>Auto is recommended. A category or show/topic hint helps later milestones make better clip decisions.</small></span>
+                  <span><strong>Content context</strong><small>Choose only what helps: content type and structure. Clip length and audio handling stay automatic.</small></span>
                   <span className="contextBeta">v22 foundation</span>
                 </div>
                 <div className="contextGrid">
@@ -861,26 +852,6 @@ export default function Home() {
                       <option value="compilation">Compilation / mixed clips</option>
                       <option value="conversation">Conversation</option>
                     </select>
-                  </label>
-                  <label>
-                    <span>Clip length</span>
-                    <select value={durationPreference} onChange={(e) => setDurationPreference(e.target.value as DurationPreference)} disabled={loading}>
-                      <option value="auto">Auto · natural ending</option>
-                      <option value="short">Short · quicker moments</option>
-                      <option value="balanced">Balanced</option>
-                      <option value="longer">Longer story · more context</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Audio track</span>
-                    <select value={audioTrack} onChange={(e) => setAudioTrack(Number(e.target.value))} disabled={loading}>
-                      <option value={0}>Auto · default track</option>
-                      <option value={1}>Track 1</option>
-                      <option value={2}>Track 2</option>
-                      <option value={3}>Track 3</option>
-                      <option value={4}>Track 4</option>
-                    </select>
-                    <small>Dual-audio anime: change this only if Auto picks the wrong language.</small>
                   </label>
                 </div>
                 <label className="subjectHintField">
@@ -953,7 +924,7 @@ export default function Home() {
 
                   <div className="contextPanel compactContext">
                     <div className="contextPanelHead">
-                      <span><strong>Content context</strong><small>Choose Auto unless you know the format.</small></span>
+                      <span><strong>Content context</strong><small>Keep it simple: choose the format only when you know it. Length and audio stay automatic.</small></span>
                       <span className="contextBeta">v22 foundation</span>
                     </div>
                     <div className="contextGrid">
@@ -963,12 +934,6 @@ export default function Home() {
                       <label><span>Video structure</span><select value={contentStructure} onChange={(e) => setContentStructure(e.target.value as ContentStructure)} disabled={loading}>
                         <option value="auto">Auto · detect structure</option><option value="single-story">Single story / episode</option><option value="compilation">Compilation / mixed clips</option><option value="conversation">Conversation</option>
                       </select></label>
-                      <label><span>Clip length</span><select value={durationPreference} onChange={(e) => setDurationPreference(e.target.value as DurationPreference)} disabled={loading}>
-                        <option value="auto">Auto · natural ending</option><option value="short">Short · quicker moments</option><option value="balanced">Balanced</option><option value="longer">Longer story · more context</option>
-                      </select></label>
-                      <label><span>Audio track</span><select value={audioTrack} onChange={(e) => setAudioTrack(Number(e.target.value))} disabled={loading}>
-                        <option value={0}>Auto · default track</option><option value={1}>Track 1</option><option value={2}>Track 2</option><option value={3}>Track 3</option><option value={4}>Track 4</option>
-                      </select><small>Dual-audio anime: choose another track only if Auto transcribes the wrong language.</small></label>
                     </div>
                     <label className="subjectHintField"><span>Show / program / subject <small>optional</small></span><input value={subjectHint} onChange={(e) => setSubjectHint(e.target.value)} maxLength={160} placeholder="e.g. Attack on Titan, Planet Earth III" disabled={loading} /></label>
                   </div>
@@ -1030,7 +995,6 @@ export default function Home() {
                 <span><b>Context</b>{contentTypeLabel(result.clips[0].context?.content_type)}</span>
                 <span><b>Structure</b>{contentStructureLabel(result.clips[0].context?.content_structure)}</span>
                 {result.clips[0].context?.subject_hint && <span><b>Hint</b>{result.clips[0].context?.subject_hint}</span>}
-                <span><b>Length</b>{durationPreference === "auto" ? "Auto" : durationPreference === "short" ? "Short" : durationPreference === "longer" ? "Longer story" : "Balanced"}</span>
                 <small>Clip AI now checks setup, question/answer flow and payoff before choosing a boundary; length remains a preference, not a forced target.</small>
               </div>
             )}

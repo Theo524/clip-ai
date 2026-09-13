@@ -1,8 +1,8 @@
-# Clip AI v23 · Narrative Intelligence 2.0 (M1)
+# Clip AI v23 · Narrative Intelligence 2.0 (M2)
 
 Clip AI turns long English-language videos into ranked, reframed, captioned vertical Shorts. v23 M1 keeps the stable v22 rendering/transcription pipeline and changes one core thing: **clip boundaries now care more about whether the story actually makes sense**.
 
-## What changed in v23 M1
+## What changed in v23 M1 / M1.1
 
 - **Necessary setup detection** — reply-like or pronoun-only openings lose points unless the needed setup is included.
 - **Question → answer protection** — a clip will not stop on a question when the answer follows immediately.
@@ -11,6 +11,7 @@ Clip AI turns long English-language videos into ranked, reframed, captioned vert
 - **No forced stretching** — complete punchlines and short self-contained moments stay short.
 - **Scene-safe context** — narrative extension never crosses a detected compilation/topic boundary.
 - **Narrative score** — the existing “Why this clip?” breakdown now includes a Narrative metric.
+- **Simpler creation UI** — Clip length and audio-track selectors are removed. Length is decided automatically by narrative completeness, and audio uses the source/default track automatically. The main context choices stay Content type + Video structure.
 
 Everything from the frozen v22 build remains: memory-safe Whisper, grounded titles/descriptions/tags, Anime Auto black canvas + Compact frame + low Cinematic captions, previews, replacement suggestions, dual-audio handling, source cleanup and recovery.
 

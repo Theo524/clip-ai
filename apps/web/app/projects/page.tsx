@@ -172,7 +172,6 @@ export default function ProjectsPage() {
                     <span>{humanBytes(project.storage_bytes)}</span>
                     <span>{project.processing_profile || "balanced"}</span>
                     {!!project.analysis_seconds && <span>{project.analysis_seconds < 60 ? `${Math.round(project.analysis_seconds)}s` : `${(project.analysis_seconds / 60).toFixed(1)}m`} analysis</span>}
-                    {(project.audio_track_count || 0) > 1 && <span>audio {project.audio_track || 1}/{project.audio_track_count}</span>}
                     <span>{(project.resolved_content_type || project.content_type || "other").replace("film-tv", "film / TV").replace("meme-comedy", "meme / comedy")}</span>
                     <span>{(project.resolved_content_structure || project.content_structure || "single-story").replace("single-story", "single story")}</span>
                   </div>

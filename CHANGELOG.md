@@ -1,5 +1,23 @@
 # Changelog
 
+## 23.0.0-beta.3 · M2 Boundary Refinement
+
+- Keeps the simplified Content type + Video structure UI from M1.1.
+- Detects immediate reaction/payoff lines so anime, film and comedy clips do not cut just before the reaction.
+- Uses local semantic continuity to avoid stopping while the same idea is still being completed.
+- Rewards clips that include the compact setup needed for a reply/answer.
+- Adds internal boundary-confidence scoring and lightly prefers the shortest complete version of a moment.
+- No framing/caption changes; Anime Auto remains black canvas + Compact frame + Cinematic captions low inside the picture.
+
+## 23.0.0-beta.2 · M1.1 Simpler Context UI
+
+- Removes the public **Clip length** selector; Narrative Intelligence decides length automatically from setup/payoff/completeness.
+- Removes the public **Audio track** selector; the worker keeps automatic/default-track handling internally.
+- Keeps **Content type** and **Video structure** as the two main context choices, plus the optional show/program/subject hint.
+- Removes the audio-track project badge to reduce UI clutter.
+- No ranking, transcription, framing, caption, or rendering behavior is otherwise changed from v23 M1.
+- Backend regression suite remains 98 tests.
+
 ## 23.0.0-beta.1 · Narrative Intelligence 2.0
 
 - Adds narrative-completeness scoring as a first-class ranking dimension.
