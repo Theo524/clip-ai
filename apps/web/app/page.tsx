@@ -111,6 +111,10 @@ type ProjectDetail = {
   duration_preference?: string;
   project_notes?: string;
   context_confidence?: number;
+  audio_track?: number;
+  audio_track_count?: number;
+  source_available?: boolean;
+  analysis_seconds?: number;
   clips: Clip[];
   renders: SavedRender[];
 };
@@ -295,6 +299,7 @@ export default function Home() {
   const [contentStructure, setContentStructure] = useState<ContentStructure>("auto");
   const [subjectHint, setSubjectHint] = useState("");
   const [durationPreference, setDurationPreference] = useState<DurationPreference>("auto");
+  const [audioTrack, setAudioTrack] = useState(0);
   const [projectNotes, setProjectNotes] = useState("");
   const [projectNotesSaved, setProjectNotesSaved] = useState(false);
   const [previews, setPreviews] = useState<Record<number, RenderResponse>>({});
@@ -371,6 +376,7 @@ export default function Home() {
       if (["auto", "single-story", "compilation", "conversation"].includes(data.content_structure || "")) setContentStructure((data.content_structure || "auto") as ContentStructure);
       setSubjectHint(data.subject_hint || "");
       if (["auto", "short", "balanced", "longer"].includes(data.duration_preference || "")) setDurationPreference((data.duration_preference || "auto") as DurationPreference);
+      setAudioTrack(Number(data.audio_track || 0));
       setProjectNotes(data.project_notes || "");
       setProjectNotesSaved(false);
       setPreviews({});
@@ -415,6 +421,7 @@ export default function Home() {
       form.append("content_type", contentType);
       form.append("content_structure", contentStructure);
       form.append("duration_preference", durationPreference);
+      form.append("audio_track", String(audioTrack));
       if (subjectHint.trim()) form.append("subject_hint", subjectHint.trim());
       window.localStorage.setItem("clip-ai-processing-profile", processingProfile);
       const res = await fetch(`${workerUrl}/tasks/analyze-upload`, { method: "POST", body: form });
@@ -483,6 +490,7 @@ export default function Home() {
       form.append("content_type", contentType);
       form.append("content_structure", contentStructure);
       form.append("duration_preference", durationPreference);
+      form.append("audio_track", String(audioTrack));
       if (subjectHint.trim()) form.append("subject_hint", subjectHint.trim());
       window.localStorage.setItem("clip-ai-processing-profile", processingProfile);
       form.append("title", youtubeInfo.title);
@@ -796,7 +804,7 @@ export default function Home() {
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
-          <div className="badge">v22 · M5 editing & workflow</div>
+          <div className="badge">v22 · beta freeze</div>
         </div>
       </nav>
 
@@ -862,6 +870,17 @@ export default function Home() {
                       <option value="balanced">Balanced</option>
                       <option value="longer">Longer story · more context</option>
                     </select>
+                  </label>
+                  <label>
+                    <span>Audio track</span>
+                    <select value={audioTrack} onChange={(e) => setAudioTrack(Number(e.target.value))} disabled={loading}>
+                      <option value={0}>Auto · default track</option>
+                      <option value={1}>Track 1</option>
+                      <option value={2}>Track 2</option>
+                      <option value={3}>Track 3</option>
+                      <option value={4}>Track 4</option>
+                    </select>
+                    <small>Dual-audio anime: change this only if Auto picks the wrong language.</small>
                   </label>
                 </div>
                 <label className="subjectHintField">
@@ -947,6 +966,9 @@ export default function Home() {
                       <label><span>Clip length</span><select value={durationPreference} onChange={(e) => setDurationPreference(e.target.value as DurationPreference)} disabled={loading}>
                         <option value="auto">Auto · natural ending</option><option value="short">Short · quicker moments</option><option value="balanced">Balanced</option><option value="longer">Longer story · more context</option>
                       </select></label>
+                      <label><span>Audio track</span><select value={audioTrack} onChange={(e) => setAudioTrack(Number(e.target.value))} disabled={loading}>
+                        <option value={0}>Auto · default track</option><option value={1}>Track 1</option><option value={2}>Track 2</option><option value={3}>Track 3</option><option value={4}>Track 4</option>
+                      </select><small>Dual-audio anime: choose another track only if Auto transcribes the wrong language.</small></label>
                     </div>
                     <label className="subjectHintField"><span>Show / program / subject <small>optional</small></span><input value={subjectHint} onChange={(e) => setSubjectHint(e.target.value)} maxLength={160} placeholder="e.g. Attack on Titan, Planet Earth III" disabled={loading} /></label>
                   </div>
@@ -1009,7 +1031,7 @@ export default function Home() {
                 <span><b>Structure</b>{contentStructureLabel(result.clips[0].context?.content_structure)}</span>
                 {result.clips[0].context?.subject_hint && <span><b>Hint</b>{result.clips[0].context?.subject_hint}</span>}
                 <span><b>Length</b>{durationPreference === "auto" ? "Auto" : durationPreference === "short" ? "Short" : durationPreference === "longer" ? "Longer story" : "Balanced"}</span>
-                <small>M5 keeps natural endings, but the length preference now nudges ranking toward quicker or more complete story clips.</small>
+                <small>Natural endings stay protected; the length preference only nudges ranking toward quicker or more complete story clips.</small>
               </div>
             )}
 
@@ -1529,7 +1551,7 @@ export default function Home() {
             </div>
               </div>
             </details>
-            <div className="footNote">v22 M5 adds quick previews, length preferences, saved notes and feedback while keeping Anime Cinematic captions locked low inside the picture.</div>
+            <div className="footNote">v22 Beta Freeze adds dual-audio selection, project space cleanup and performance tracking while keeping Anime Cinematic captions locked low inside the picture.</div>
           </section>
         )}
       </main>
@@ -1540,7 +1562,7 @@ export default function Home() {
             <div className="onboardingTop">
               <span className="onboardingMark">✦</span>
               <div>
-                <span className="onboardingKicker">Clip AI v22 · Visual & Caption Intelligence</span>
+                <span className="onboardingKicker">Clip AI v22 · Long-Term Beta</span>
                 <h2 id="welcome-title">You do not need to learn the editor first.</h2>
               </div>
             </div>

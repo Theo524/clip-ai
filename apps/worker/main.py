@@ -16,25 +16,25 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from models import AnalyzeRequest, AnalyzeResponse, CleanupResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ClipFeedbackRequest, ClipTimingUpdateRequest, CoverRequest, ProjectDetail, ProjectNotesUpdateRequest, ProjectSummary, RenderClipRequest, RenderClipResponse, SystemCheck, SystemPreflightResponse, TaskCreateResponse, TaskStatusResponse, TranscriptEditRequest, TranscriptRangeResponse, TranscriptSegment, YouTubeInfoResponse
+from models import AnalyzeRequest, AnalyzeResponse, CleanupResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ClipFeedbackRequest, ClipTimingUpdateRequest, CoverRequest, ProjectCleanupRequest, ProjectCleanupResponse, ProjectDetail, ProjectNotesUpdateRequest, ProjectSummary, RenderClipRequest, RenderClipResponse, SystemCheck, SystemPreflightResponse, TaskCreateResponse, TaskStatusResponse, TranscriptEditRequest, TranscriptRangeResponse, TranscriptSegment, YouTubeInfoResponse
 from settings import settings
 from services.media import cut_clip, extract_audio_chunks, extract_cover_frame, normalize_media, probe_media, probe_media_audio, render_adaptive_short, should_normalize_media
 from services.captions import write_clip_ass
 from services.mock import mock_clips
 from services.reframe import ReframePlan, load_reframe_plan, plan_smart_reframe, save_reframe_plan
 from services.layouts import auto_profile, burned_subtitles_likely, choose_caption_style, choose_caption_zone, choose_frame_size, choose_layout
-from services.projects import cleanup_stale_work, directory_size, load_project, rendered_media, save_project
+from services.projects import cleanup_project_storage, cleanup_stale_work, directory_size, load_project, rendered_media, save_project, source_available
 from services.copywriter import dialogue_for_range, generate_clip_copy_local
 from services.tasks import tasks
 from services.profiles import get_processing_profile, PROFILES
 from services.subtitles_export import to_srt, to_vtt
 from services.diagnostics import build_diagnostic_zip
-from services.transcript_cache import load_cached_transcript, save_cached_transcript, transcript_cache_key
+from services.transcript_cache import cleanup_transcript_cache, load_cached_transcript, save_cached_transcript, transcript_cache_key
 from services.context import candidate_context, normalize_content_structure, normalize_content_type, normalize_subject_hint, resolve_content_context
 from services.smart_rank import RANKING_VERSION, detect_shot_boundaries, rank_clip_candidates_m2
 
-APP_VERSION = "22.0.0-m5"
-RELEASE_NAME = "Editing & Workflow"
+APP_VERSION = "22.0.0-beta.1"
+RELEASE_NAME = "Long-Term Beta Freeze"
 
 app = FastAPI(title="Clip AI Worker", version=APP_VERSION)
 app.add_middleware(
@@ -304,6 +304,7 @@ def analyze_local_media(
     content_structure: str = "auto",
     subject_hint: str | None = None,
     duration_preference: str = "auto",
+    audio_track: int = 0,
     progress=None,
     cancel_event=None,
 ) -> AnalyzeResponse:
@@ -318,6 +319,12 @@ def analyze_local_media(
     duration_preference = (duration_preference or "auto").lower().strip()
     if duration_preference not in {"auto", "short", "balanced", "longer"}:
         duration_preference = "auto"
+    audio_track = max(0, int(audio_track or 0))
+    analysis_started = time.monotonic()
+    transcription_seconds = 0.0
+    ranking_seconds = 0.0
+    metadata_seconds = 0.0
+    transcript_source = "fresh"
 
     def notify(value: int, stage: str, message: str) -> None:
         if progress is not None:
@@ -335,6 +342,15 @@ def analyze_local_media(
             raise RuntimeError("This file does not contain a readable video stream.")
         if not detailed_info.get("has_audio"):
             raise RuntimeError("This video has no audio track. Clip AI needs spoken audio to find clip moments.")
+        audio_count = int(detailed_info.get("audio_streams") or 0)
+        if audio_track > audio_count:
+            raise RuntimeError(f"Audio track {audio_track} was selected, but this video only has {audio_count} audio track(s).")
+        selected_audio_track = audio_track or int(detailed_info.get("default_audio_track") or 1)
+        if audio_count > 1:
+            track_info = next((item for item in detailed_info.get("audio_tracks", []) if int(item.get("track", 0)) == selected_audio_track), {})
+            label_bits = [str(track_info.get("language") or "").upper(), str(track_info.get("title") or "")]
+            track_label = " · ".join(bit for bit in label_bits if bit)
+            notify(5, "Choosing audio", f"Using audio track {selected_audio_track} of {audio_count}{' · ' + track_label if track_label else ''}.")
         usage = shutil.disk_usage(Path(settings.work_dir).resolve())
         source_size = int(detailed_info.get("size_bytes") or 0)
         # Keep at least the configured floor plus enough room for a working copy/renders.
@@ -344,13 +360,17 @@ def analyze_local_media(
 
         working_media = media_path
         normalize_needed, normalize_reasons = should_normalize_media(detailed_info, media_path)
+        if int(detailed_info.get("audio_streams") or 0) > 1:
+            normalize_needed = True
+            if "audio track selection" not in normalize_reasons:
+                normalize_reasons.append("audio track selection")
         normalized_path = job_dir / "normalized.mp4"
         if normalize_needed:
             if normalized_path.exists() and normalized_path.stat().st_size > 0:
                 notify(8, "Using normalized media", "Reusing the stable working copy created earlier.")
             else:
                 notify(6, "Normalizing media", f"Creating a stable working copy ({', '.join(normalize_reasons)})…")
-                normalize_media(media_path, str(normalized_path), cancel_event=cancel_event, preset=profile.render_preset)
+                normalize_media(media_path, str(normalized_path), cancel_event=cancel_event, preset=profile.render_preset, audio_track=selected_audio_track)
             working_media = str(normalized_path)
 
         duration = float(detailed_info.get("duration") or 0.0)
@@ -372,12 +392,13 @@ def analyze_local_media(
             "subject_hint": clean_subject_hint,
             "duration_preference": duration_preference,
             "media_preflight": detailed_info,
+            "audio_track": selected_audio_track,
             "normalized": normalize_needed,
         })
 
         transcript_path = job_dir / "transcript.json"
         cache_root = Path(settings.work_dir) / "cache" / "transcripts"
-        cache_key = transcript_cache_key(media_path, _transcription_strategy())
+        cache_key = transcript_cache_key(media_path, f"{_transcription_strategy()}:audio:{selected_audio_track}")
         segments: list[TranscriptSegment] = []
 
         if transcript_path.exists():
@@ -387,15 +408,18 @@ def analyze_local_media(
             except Exception:
                 segments = []
             if segments:
+                transcript_source = "saved-project"
                 notify(64, "Using saved transcript", "This project was already transcribed, so Clip AI skipped Whisper.")
 
         if not segments:
             cached = load_cached_transcript(cache_root, cache_key)
             if cached:
                 segments = cached
+                transcript_source = "cache"
                 notify(64, "Using transcript cache", "This same video was transcribed before, so Clip AI reused the cached transcript.")
 
         if not segments:
+            transcription_started = time.monotonic()
             notify(6, "Preparing audio", "Extracting lightweight 16 kHz mono speech audio…")
             if audio_dir.exists():
                 shutil.rmtree(audio_dir, ignore_errors=True)
@@ -403,6 +427,7 @@ def analyze_local_media(
                 working_media,
                 str(audio_dir),
                 chunk_seconds=effective_chunk_seconds,
+                audio_track=1 if normalize_needed else selected_audio_track,
                 cancel_event=cancel_event,
             )
 
@@ -455,6 +480,7 @@ def analyze_local_media(
                 if index + 1 < total_chunks:
                     average = sum(chunk_times) / len(chunk_times)
                     notify(completed_pct, "Transcribing", f"Finished chunk {index + 1} of {total_chunks} · {_eta_text(average * (total_chunks - index - 1))}")
+            transcription_seconds = max(0.0, time.monotonic() - transcription_started)
 
         check_cancel()
         if not segments:
@@ -501,10 +527,12 @@ def analyze_local_media(
             clips = [ClipCandidate.model_validate(item) for item in existing_clips[:max_clips]]
         else:
             notify(74, "Finding moments", "Ranking the strongest standalone moments…")
+            ranking_started = time.monotonic()
             if settings.ranking_backend.lower().strip() == "local":
                 clips = _rank_segments(segments, max_clips=max_clips, context=context, media_path=working_media, duration_preference=duration_preference)
             else:
                 clips = _rank_segments(segments, max_clips=max_clips)
+            ranking_seconds = max(0.0, time.monotonic() - ranking_started)
 
         for clip in clips:
             previous = clip.context or {}
@@ -526,6 +554,7 @@ def analyze_local_media(
         })
 
         notify(84, "Writing metadata", "Creating grounded titles, descriptions and useful tags…")
+        metadata_started = time.monotonic()
         for idx, clip in enumerate(clips):
             check_cancel()
             dialogue = dialogue_for_range(segments, clip.start, clip.end)
@@ -548,6 +577,7 @@ def analyze_local_media(
             clip.context = {**(clip.context or {}), "grounded_terms": list(generated.grounded_terms), "copy_version": "m3"}
             if clips:
                 notify(84 + int(((idx + 1) / len(clips)) * 8), "Writing metadata", f"Polishing clip {idx + 1} of {len(clips)}…")
+        metadata_seconds = max(0.0, time.monotonic() - metadata_started)
 
         check_cancel()
         notify(94, "Saving project", "Saving the project so it can be reopened later…")
@@ -571,6 +601,14 @@ def analyze_local_media(
                 "duration_preference": duration_preference,
                 "context_confidence": context.confidence,
                 "context_signals": list(context.signals),
+                "audio_track": selected_audio_track,
+                "performance": {
+                    "analysis_seconds": round(max(0.0, time.monotonic() - analysis_started), 2),
+                    "transcription_seconds": round(transcription_seconds, 2),
+                    "ranking_seconds": round(ranking_seconds, 2),
+                    "metadata_seconds": round(metadata_seconds, 2),
+                    "transcript_source": transcript_source,
+                },
             },
         )
         notify(98, "Cleaning up", "Removing temporary audio files…")
@@ -696,9 +734,10 @@ def system_cleanup():
     root = Path(settings.work_dir).resolve()
     before = directory_size(root)
     cleanup = cleanup_stale_work(root)
+    cache_cleanup = cleanup_transcript_cache(root / "cache" / "transcripts")
     after = directory_size(root)
     return CleanupResponse(
-        removed_files=int(cleanup.get("temp_files", 0)) + int(cleanup.get("audio_dirs", 0)),
+        removed_files=int(cleanup.get("temp_files", 0)) + int(cleanup.get("audio_dirs", 0)) + int(cache_cleanup.get("removed_files", 0)),
         removed_bytes=max(0, before - after),
         startup_cleanup=int(STARTUP_CLEANUP.get("temp_files", 0)) + int(STARTUP_CLEANUP.get("audio_dirs", 0)),
     )
@@ -764,6 +803,7 @@ async def analyze_youtube_owned(
     content_structure: str = Form(default="auto"),
     subject_hint: str | None = Form(default=None),
     duration_preference: str = Form(default="auto"),
+    audio_track: int = Form(default=0),
 ):
     if not is_youtube_url(source_url):
         raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
@@ -809,6 +849,7 @@ async def analyze_youtube_owned(
         content_structure=content_structure,
         subject_hint=subject_hint,
         duration_preference=duration_preference,
+        audio_track=audio_track,
     )
 
 
@@ -832,7 +873,7 @@ def analyze(request: AnalyzeRequest):
             detail="Direct YouTube ingestion is not connected yet. Upload an authorised video file for real analysis.",
         )
 
-    return analyze_local_media(request.local_media_path, source_url, request.max_clips, processing_profile=request.processing_profile, content_type=request.content_type, content_structure=request.content_structure, subject_hint=request.subject_hint, duration_preference=request.duration_preference)
+    return analyze_local_media(request.local_media_path, source_url, request.max_clips, processing_profile=request.processing_profile, content_type=request.content_type, content_structure=request.content_structure, subject_hint=request.subject_hint, duration_preference=request.duration_preference, audio_track=request.audio_track)
 
 
 @app.post("/tasks/analyze-upload", response_model=TaskCreateResponse, status_code=202)
@@ -844,6 +885,7 @@ async def start_analyze_upload_task(
     content_structure: str = Form(default="auto"),
     subject_hint: str | None = Form(default=None),
     duration_preference: str = Form(default="auto"),
+    audio_track: int = Form(default=0),
 ):
     if max_clips < 1 or max_clips > 12:
         raise HTTPException(status_code=422, detail="max_clips must be between 1 and 12.")
@@ -873,18 +915,19 @@ async def start_analyze_upload_task(
         "content_structure": normalize_content_structure(content_structure),
         "duration_preference": duration_preference,
         "subject_hint": normalize_subject_hint(subject_hint),
+        "audio_track": max(0, int(audio_track or 0)),
     })
 
     def runner(task_id, cancel_event):
         return analyze_local_media(
             str(saved_path), filename, max_clips,
             job_id=job_id, project_title=filename, source_type="upload", processing_profile=profile_name,
-            content_type=content_type, content_structure=content_structure, subject_hint=subject_hint, duration_preference=duration_preference,
+            content_type=content_type, content_structure=content_structure, subject_hint=subject_hint, duration_preference=duration_preference, audio_track=audio_track,
             progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
             cancel_event=cancel_event,
         )
 
-    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips, "content_type": normalize_content_type(content_type), "content_structure": normalize_content_structure(content_structure), "subject_hint": normalize_subject_hint(subject_hint), "duration_preference": duration_preference})
+    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips, "content_type": normalize_content_type(content_type), "content_structure": normalize_content_structure(content_structure), "subject_hint": normalize_subject_hint(subject_hint), "duration_preference": duration_preference, "audio_track": max(0, int(audio_track or 0))})
     return TaskCreateResponse(task_id=record["task_id"], job_id=job_id, status=record["status"])
 
 
@@ -902,6 +945,7 @@ async def start_analyze_youtube_task(
     content_structure: str = Form(default="auto"),
     subject_hint: str | None = Form(default=None),
     duration_preference: str = Form(default="auto"),
+    audio_track: int = Form(default=0),
 ):
     if not is_youtube_url(source_url):
         raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
@@ -940,6 +984,7 @@ async def start_analyze_youtube_task(
         "content_structure": normalize_content_structure(content_structure),
         "duration_preference": duration_preference,
         "subject_hint": normalize_subject_hint(subject_hint),
+        "audio_track": max(0, int(audio_track or 0)),
     })
 
     def runner(task_id, cancel_event):
@@ -947,12 +992,12 @@ async def start_analyze_youtube_task(
             str(saved_path), source_url, max_clips,
             job_id=job_id, project_title=title or filename, source_type="youtube",
             author_name=author_name, thumbnail_url=thumbnail_url, processing_profile=profile_name,
-            content_type=content_type, content_structure=content_structure, subject_hint=subject_hint, duration_preference=duration_preference,
+            content_type=content_type, content_structure=content_structure, subject_hint=subject_hint, duration_preference=duration_preference, audio_track=audio_track,
             progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
             cancel_event=cancel_event,
         )
 
-    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips, "content_type": normalize_content_type(content_type), "content_structure": normalize_content_structure(content_structure), "subject_hint": normalize_subject_hint(subject_hint), "duration_preference": duration_preference})
+    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips, "content_type": normalize_content_type(content_type), "content_structure": normalize_content_structure(content_structure), "subject_hint": normalize_subject_hint(subject_hint), "duration_preference": duration_preference, "audio_track": max(0, int(audio_track or 0))})
     return TaskCreateResponse(task_id=record["task_id"], job_id=job_id, status=record["status"])
 
 
@@ -965,6 +1010,7 @@ async def analyze_upload(
     content_structure: str = Form(default="auto"),
     subject_hint: str | None = Form(default=None),
     duration_preference: str = Form(default="auto"),
+    audio_track: int = Form(default=0),
 ):
     if max_clips < 1 or max_clips > 12:
         raise HTTPException(status_code=422, detail="max_clips must be between 1 and 12.")
@@ -1006,6 +1052,8 @@ async def analyze_upload(
         content_type=content_type,
         content_structure=content_structure,
         subject_hint=subject_hint,
+        duration_preference=duration_preference,
+        audio_track=audio_track,
     )
 
 
@@ -1035,6 +1083,10 @@ def _project_summary(job_dir: Path, data: dict) -> ProjectSummary:
         duration_preference=str(data.get("duration_preference") or "auto"),
         project_notes=str(data.get("project_notes") or ""),
         context_confidence=float(data.get("context_confidence") or 0.0),
+        audio_track=int(data.get("audio_track") or 0),
+        audio_track_count=int((data.get("media_preflight") or {}).get("audio_streams") or 0),
+        source_available=source_available(job_dir),
+        analysis_seconds=float((data.get("performance") or {}).get("analysis_seconds") or 0.0),
     )
 
 
@@ -1070,6 +1122,20 @@ def get_project(job_id: str):
 
 
 
+@app.post("/projects/{job_id}/cleanup", response_model=ProjectCleanupResponse)
+def cleanup_project(job_id: str, request: ProjectCleanupRequest):
+    job_dir = _job_dir(job_id)
+    data = load_project(job_dir)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Saved project not found.")
+    if request.remove_source and not rendered_media(job_dir, job_id):
+        raise HTTPException(status_code=409, detail="Render at least one finished video before deleting the source media.")
+    result = cleanup_project_storage(job_dir, remove_source=request.remove_source)
+    if request.remove_source:
+        save_project(job_dir, {"source_archived": not bool(result["source_available"])})
+    return ProjectCleanupResponse(**result)
+
+
 @app.post("/projects/{job_id}/resume", response_model=TaskCreateResponse, status_code=202)
 def resume_project(job_id: str):
     job_dir = _job_dir(job_id)
@@ -1095,6 +1161,7 @@ def resume_project(job_id: str):
             content_structure=str(data.get("content_structure") or "auto"),
             subject_hint=data.get("subject_hint"),
             duration_preference=str(data.get("duration_preference") or "auto"),
+            audio_track=int(data.get("audio_track") or 0),
             progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
             cancel_event=cancel_event,
         )

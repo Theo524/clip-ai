@@ -98,3 +98,10 @@ Projects persist requested/resolved content type, requested/resolved structure, 
 The render endpoint resolves the saved project content type before visual analysis. `plan_smart_reframe()` only scans the requested clip range on a <=480 px proxy. Anime/film gets a conservative cinematic profile, gameplay/documentary can use saliency-guided visual tracking, and podcast/talking-head clips retain speaker-aware behavior. Shot cuts clear stale tracking state and split stabilization into independent scenes.
 
 Auto anime rendering uses `preserve`, which scales the whole source frame into the 9:16 canvas. `picture_window()` exposes the actual visible source rectangle so ASS captions stay inside the anime/film picture. Repeated lower subtitle-like samples cause Auto captions to move away from the lower band. The public `meme` style was merged into `viral`, with the old API value retained as a compatibility alias.
+
+## v22 M6 freeze notes
+
+- Multi-audio sources use a persisted 1-based `audio_track`; `0` means source default/Auto. Track selection is part of transcript-cache identity.
+- When multiple audio tracks exist, the selected stream is normalized into the stable H.264/AAC working copy so transcription and later rendering stay consistent.
+- Per-project cleanup can discard source/normalized media only after a finished render exists. Transcript, metadata, final renders, covers and export packages are durable.
+- The cross-project transcript cache is disposable and bounded; per-project transcript checkpoints are durable.

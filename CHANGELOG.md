@@ -1,5 +1,17 @@
 # Changelog
 
+## 22.0.0-beta.1 · M6 Long-Term Beta Freeze
+
+- Added user-selectable audio tracks for dual-audio/multilingual sources; Auto follows the source default track.
+- Multi-audio sources are normalized with the selected track so Whisper and rendered Shorts use the same audio.
+- Transcript-cache identity now includes audio-track selection.
+- Added per-project **Free space** cleanup that preserves finished Shorts, covers, transcript, metadata and export packages while optionally deleting the original/normalized source.
+- Added bounded transcript-cache cleanup (30-day age policy / ~512 MB cap) without touching per-project transcripts.
+- Added lightweight analysis timing/performance metadata and Project-card duration display.
+- Project schema advanced to 24 with additive migration defaults.
+- Updated Windows updater to clean stale code and Next/Turbopack cache while preserving Git, venv, work/projects and settings.
+- Backend regression suite: 92 tests passed.
+
 ## 22.0.0-M5 · Editing & Workflow
 
 - Locked Anime + Cinematic + Focus captions to the lower in-frame position and moved the anchor lower (88% of the picture height).

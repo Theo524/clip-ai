@@ -97,7 +97,7 @@ export default function StatusPage() {
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink activeNav" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v22 · M5 editing & workflow</div>
+          <div className="badge">v22 · beta freeze</div>
         </div>
       </nav>
 
@@ -159,7 +159,7 @@ export default function StatusPage() {
 
             <section className="betaNotice">
               <strong>What “beta” means here</strong>
-              <p>v22 M4.2 uses the classic anime cinematic window: a black 9:16 canvas, a medium central frame, calmer shot-aware tracking, and clean captions kept low inside the picture.</p>
+              <p>v22 Beta Freeze keeps the classic anime cinematic window and adds dual-audio handling, safer cleanup, performance tracking and final regression hardening.</p>
               <code>{data.work_dir}</code>
             </section>
           </>

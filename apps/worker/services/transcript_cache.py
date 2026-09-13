@@ -67,3 +67,48 @@ def save_cached_transcript(cache_root: Path, key: str, segments: list[Transcript
     )
     temp.replace(path)
     return path
+
+
+def cleanup_transcript_cache(cache_root: Path, *, max_age_days: int = 30, max_bytes: int = 512 * 1024 * 1024) -> dict[str, int]:
+    """Bound the disposable cross-project transcript cache by age and total size.
+
+    Per-project transcript.json files are never touched. This cache only exists to
+    avoid retranscribing an identical source that is imported again later.
+    """
+    import time
+
+    if not cache_root.exists():
+        return {"removed_files": 0, "removed_bytes": 0}
+    removed_files = 0
+    removed_bytes = 0
+    now = time.time()
+    max_age_seconds = max(1, int(max_age_days)) * 86400
+    entries = []
+    for path in cache_root.glob("*.json"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        if now - stat.st_mtime > max_age_seconds:
+            try:
+                removed_bytes += stat.st_size
+                path.unlink()
+                removed_files += 1
+            except OSError:
+                pass
+        else:
+            entries.append((stat.st_mtime, stat.st_size, path))
+
+    total = sum(size for _mtime, size, _path in entries)
+    if total > max_bytes:
+        for _mtime, size, path in sorted(entries, key=lambda item: item[0]):
+            if total <= max_bytes:
+                break
+            try:
+                path.unlink()
+                removed_files += 1
+                removed_bytes += size
+                total -= size
+            except OSError:
+                pass
+    return {"removed_files": removed_files, "removed_bytes": removed_bytes}

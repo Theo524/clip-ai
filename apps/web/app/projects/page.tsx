@@ -21,6 +21,10 @@ type ProjectSummary = {
   content_structure?: string;
   resolved_content_structure?: string;
   subject_hint?: string | null;
+  audio_track?: number;
+  audio_track_count?: number;
+  source_available?: boolean;
+  analysis_seconds?: number;
 };
 
 function humanBytes(bytes: number) {
@@ -41,6 +45,7 @@ export default function ProjectsPage() {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [resuming, setResuming] = useState<string | null>(null);
+  const [cleaning, setCleaning] = useState<string | null>(null);
   const workerUrl = process.env.NEXT_PUBLIC_WORKER_URL || "http://127.0.0.1:8000";
 
   async function refresh() {
@@ -72,6 +77,18 @@ export default function ProjectsPage() {
     }
   }
 
+  async function freeProjectSpace(project: ProjectSummary) {
+    if (!window.confirm(`Free space for “${project.title}”? This keeps finished Shorts, transcript and metadata, but deletes the original source/working copy. You will not be able to re-render this project unless you add the source again.`)) return;
+    setCleaning(project.job_id); setError("");
+    try {
+      const res = await fetch(`${workerUrl}/projects/${project.job_id}/cleanup`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ remove_source: true }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not clean project storage");
+      await refresh();
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not clean project storage"); }
+    finally { setCleaning(null); }
+  }
+
   async function resumeProject(project: ProjectSummary) {
     setResuming(project.job_id); setError("");
     try {
@@ -98,7 +115,7 @@ export default function ProjectsPage() {
           <a className="navLink activeNav" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v22 · M5 editing & workflow</div>
+          <div className="badge">v22 · beta freeze</div>
         </div>
       </nav>
 
@@ -154,12 +171,16 @@ export default function ProjectsPage() {
                     <span>{project.render_count} renders</span>
                     <span>{humanBytes(project.storage_bytes)}</span>
                     <span>{project.processing_profile || "balanced"}</span>
+                    {!!project.analysis_seconds && <span>{project.analysis_seconds < 60 ? `${Math.round(project.analysis_seconds)}s` : `${(project.analysis_seconds / 60).toFixed(1)}m`} analysis</span>}
+                    {(project.audio_track_count || 0) > 1 && <span>audio {project.audio_track || 1}/{project.audio_track_count}</span>}
                     <span>{(project.resolved_content_type || project.content_type || "other").replace("film-tv", "film / TV").replace("meme-comedy", "meme / comedy")}</span>
                     <span>{(project.resolved_content_structure || project.content_structure || "single-story").replace("single-story", "single story")}</span>
                   </div>
                   <div className="projectActions">
                     <a className="projectOpen" href={`/?project=${project.job_id}`}>Open project</a>
-                    {(project.status && project.status !== "ready") && <button className="resumeButton" onClick={() => resumeProject(project)} disabled={resuming === project.job_id}>{resuming === project.job_id ? "Resuming…" : "Resume"}</button>}
+                    {(project.status && project.status !== "ready" && project.source_available !== false) && <button className="resumeButton" onClick={() => resumeProject(project)} disabled={resuming === project.job_id}>{resuming === project.job_id ? "Resuming…" : "Resume"}</button>}
+                    {(project.render_count > 0 && project.source_available !== false) && <button onClick={() => freeProjectSpace(project)} disabled={cleaning === project.job_id}>{cleaning === project.job_id ? "Cleaning…" : "Free space"}</button>}
+                    {project.source_available === false && <span className="projectArchived">Source cleaned</span>}
                     <button onClick={() => removeProject(project)}>Delete</button>
                   </div>
                 </div>

@@ -1443,3 +1443,24 @@ h1 {
 .contextGrid{grid-template-columns:repeat(3,minmax(0,1fr))}
 .bestRenderModes{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.previewButton,.previewAction{border:1px solid rgba(79,209,255,.18)!important;background:rgba(79,209,255,.07)!important;color:#cdefff!important}.feedbackSelect{max-width:132px;background:#0d1020;color:#d9deed;border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:7px 8px;font-size:10px}.previewRendered{border-color:rgba(79,209,255,.15)!important;background:rgba(79,209,255,.035)!important}.previewRendered small{display:block;color:#818ba3;font-size:10px;line-height:1.35;margin-top:3px}.projectNotesPanel{display:grid;grid-template-columns:minmax(160px,.7fr) minmax(260px,2fr) auto;gap:10px;align-items:center;margin-bottom:14px;padding:14px;border:1px solid rgba(139,124,255,.12);border-radius:14px;background:rgba(139,124,255,.035)}.projectNotesPanel>div{display:flex;flex-direction:column;gap:3px}.projectNotesPanel strong{font-size:12px}.projectNotesPanel small{font-size:10px;color:#858da2}.projectNotesPanel textarea{resize:vertical;min-height:48px;background:#0d1020;color:#f5f6fb;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:10px;line-height:1.4}.syncNudges{display:flex;justify-content:center;gap:7px;margin:8px 0}.syncNudges button{border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.035);color:#aeb6ca;border-radius:8px;padding:5px 8px;font-size:10px;cursor:pointer}.syncNudges button:hover{color:#fff;border-color:rgba(139,124,255,.25)}
 @media(max-width:760px){.contextGrid{grid-template-columns:1fr}.projectNotesPanel{grid-template-columns:1fr}.bestRenderModes{width:100%}.feedbackSelect{max-width:none}}
+
+/* v22 M6 · long-term beta freeze */
+.projectArchived{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:40px;
+  padding:0 10px;
+  border:1px solid rgba(255,255,255,.08);
+  border-radius:10px;
+  background:rgba(255,255,255,.025);
+  color:#8f96a8;
+  font-size:10px;
+  font-weight:800;
+}
+.contextGrid label > small{
+  color:#737b90;
+  font-size:9px;
+  line-height:1.35;
+  font-weight:550;
+}

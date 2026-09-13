@@ -7,7 +7,7 @@ import os
 import shutil
 import uuid
 
-PROJECT_SCHEMA_VERSION = 23
+PROJECT_SCHEMA_VERSION = 24
 
 
 def utc_now_iso() -> str:
@@ -39,6 +39,8 @@ def migrate_project(data: dict, job_id: str | None = None) -> dict:
     migrated.setdefault("context_signals", [])
     migrated.setdefault("clips", [])
     migrated.setdefault("transcript_revision", 0)
+    migrated.setdefault("audio_track", 0)
+    migrated.setdefault("performance", {})
     migrated["schema_version"] = PROJECT_SCHEMA_VERSION
     return migrated
 
@@ -149,3 +151,71 @@ def cleanup_stale_work(root: Path) -> dict[str, int]:
                 pass
 
     return {"temp_files": removed_files, "audio_dirs": removed_audio_dirs}
+
+
+def source_available(job_dir: Path) -> bool:
+    normalized = job_dir / "normalized.mp4"
+    if normalized.exists() and normalized.is_file() and normalized.stat().st_size > 0:
+        return True
+    return any(path.is_file() and path.stat().st_size > 0 for path in job_dir.glob("source.*"))
+
+
+def cleanup_project_storage(job_dir: Path, *, remove_source: bool = False) -> dict[str, int | bool]:
+    """Remove disposable project files while preserving finished output and metadata.
+
+    Always preserved: project.json, transcript.json, finished Shorts/original renders,
+    covers, export packages and YouTube metadata. If remove_source=True the original
+    source/normalized working copy are also deleted, which intentionally disables
+    future re-renders unless the source is re-added.
+    """
+    before = directory_size(job_dir)
+    removed_files = 0
+
+    audio_dir = job_dir / "audio"
+    if audio_dir.exists():
+        for path in audio_dir.rglob("*"):
+            if path.is_file():
+                removed_files += 1
+        shutil.rmtree(audio_dir, ignore_errors=True)
+
+    clips = job_dir / "clips"
+    if clips.exists():
+        disposable_patterns = ("preview_*.mp4", "captions_*.ass", "reframe_*.json", "*.part.*", "*.tmp")
+        for pattern in disposable_patterns:
+            for path in clips.glob(pattern):
+                if path.is_file():
+                    try:
+                        path.unlink()
+                        removed_files += 1
+                    except OSError:
+                        pass
+
+    # Failed/interrupted atomic leftovers can occur anywhere in the project.
+    for pattern in ("*.part.*", ".*.tmp", "*.tmp"):
+        for path in job_dir.rglob(pattern):
+            if path.is_file():
+                try:
+                    path.unlink()
+                    removed_files += 1
+                except OSError:
+                    pass
+
+    source_removed = False
+    if remove_source:
+        candidates = [job_dir / "normalized.mp4", *job_dir.glob("source.*")]
+        for path in candidates:
+            if path.exists() and path.is_file():
+                try:
+                    path.unlink()
+                    removed_files += 1
+                    source_removed = True
+                except OSError:
+                    pass
+
+    after = directory_size(job_dir)
+    return {
+        "removed_files": removed_files,
+        "removed_bytes": max(0, before - after),
+        "source_removed": source_removed,
+        "source_available": source_available(job_dir),
+    }

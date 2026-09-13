@@ -16,6 +16,7 @@ class AnalyzeRequest(BaseModel):
     content_structure: ContentStructure = "auto"
     subject_hint: str | None = Field(default=None, max_length=160)
     duration_preference: DurationPreference = "auto"
+    audio_track: int = Field(default=0, ge=0, le=16)
 
 
 class YouTubeInfoResponse(BaseModel):
@@ -161,6 +162,10 @@ class ProjectSummary(BaseModel):
     duration_preference: str = "auto"
     project_notes: str = ""
     context_confidence: float = 0.0
+    audio_track: int = 0
+    audio_track_count: int = 0
+    source_available: bool = True
+    analysis_seconds: float = 0.0
 
 
 class ProjectDetail(ProjectSummary):
@@ -213,6 +218,17 @@ class CoverRequest(BaseModel):
     at_seconds: float = Field(ge=0, le=180)
 
 
+
+
+class ProjectCleanupRequest(BaseModel):
+    remove_source: bool = False
+
+
+class ProjectCleanupResponse(BaseModel):
+    removed_files: int = 0
+    removed_bytes: int = 0
+    source_removed: bool = False
+    source_available: bool = True
 
 
 class ProjectNotesUpdateRequest(BaseModel):

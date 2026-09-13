@@ -64,6 +64,7 @@ def extract_audio_chunks(
     output_dir: str,
     chunk_seconds: int = 1200,
     *,
+    audio_track: int = 0,
     cancel_event: threading.Event | None = None,
 ) -> list[str]:
     """Extract mono 16 kHz MP3 chunks suitable for timestamped transcription."""
@@ -81,6 +82,7 @@ def extract_audio_chunks(
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(source),
+        "-map", f"0:a:{max(0, int(audio_track) - 1)}?",
         "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k",
         "-f", "segment", "-segment_time", str(chunk_seconds),
         "-reset_timestamps", "1", str(pattern),
@@ -353,6 +355,20 @@ def probe_media(media_path: str) -> dict:
                     rotation = int(side["rotation"])
                 except Exception:
                     pass
+    audio_tracks = []
+    for position, stream in enumerate(audios, start=1):
+        tags = stream.get("tags") or {}
+        disposition = stream.get("disposition") or {}
+        audio_tracks.append({
+            "track": position,
+            "stream_index": int(stream.get("index") or 0),
+            "codec": stream.get("codec_name"),
+            "language": tags.get("language"),
+            "title": tags.get("title"),
+            "channels": int(stream.get("channels") or 0),
+            "default": bool(disposition.get("default")),
+        })
+    default_audio_track = next((item["track"] for item in audio_tracks if item.get("default")), 1 if audio_tracks else 0)
     return {
         "duration": max(0.0, duration),
         "size_bytes": source.stat().st_size,
@@ -360,6 +376,8 @@ def probe_media(media_path: str) -> dict:
         "has_video": video is not None,
         "has_audio": bool(audios),
         "audio_streams": len(audios),
+        "audio_tracks": audio_tracks,
+        "default_audio_track": default_audio_track,
         "video_codec": video.get("codec_name") if video else None,
         "audio_codec": audios[0].get("codec_name") if audios else None,
         "width": int(video.get("width") or 0) if video else 0,
@@ -393,6 +411,7 @@ def normalize_media(
     *,
     cancel_event: threading.Event | None = None,
     preset: str = "veryfast",
+    audio_track: int = 0,
 ) -> str:
     """Create a stable H.264/AAC CFR working copy for unusual source media."""
     require_ffmpeg()
@@ -402,7 +421,7 @@ def normalize_media(
     command = [
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
         "-i", str(source),
-        "-map", "0:v:0", "-map", "0:a:0?",
+        "-map", "0:v:0", "-map", f"0:a:{max(0, int(audio_track) - 1)}?",
         "-vf", "fps=30",
         "-c:v", "libx264", "-preset", preset, "-crf", "20", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", "128k", "-ar", "48000",
