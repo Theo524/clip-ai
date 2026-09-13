@@ -1,4 +1,4 @@
-# Clip AI v22 M2 architecture
+# Clip AI v22 M4 architecture
 
 v21 keeps the existing creative pipeline but adds durable local task/project state and an editing/export layer around it.
 
@@ -12,7 +12,7 @@ Next.js web app
   ├─ Projects search/filter/resume
   └─ System + redacted diagnostics
              ↓
-FastAPI worker 22.0.0-m2
+FastAPI worker 22.0.0-m4
              ↓
 media preflight + disk guard
              ↓
@@ -92,3 +92,9 @@ A hosted public release should replace local disk/task state with authenticated 
 ## v22 context and M2 ranking
 
 Projects persist requested/resolved content type, requested/resolved structure, optional subject hint, confidence/signals, and a local context envelope per clip. M2's local selector records scene bounds, moment types and quality warnings; the context envelope is clamped to the scene. Existing M1 projects retain their saved clips when resumed.
+
+## v22 M4 visual pipeline
+
+The render endpoint resolves the saved project content type before visual analysis. `plan_smart_reframe()` only scans the requested clip range on a <=480 px proxy. Anime/film gets a conservative cinematic profile, gameplay/documentary can use saliency-guided visual tracking, and podcast/talking-head clips retain speaker-aware behavior. Shot cuts clear stale tracking state and split stabilization into independent scenes.
+
+Auto anime rendering uses `preserve`, which scales the whole source frame into the 9:16 canvas. `picture_window()` exposes the actual visible source rectangle so ASS captions stay inside the anime/film picture. Repeated lower subtitle-like samples cause Auto captions to move away from the lower band. The public `meme` style was merged into `viral`, with the old API value retained as a compatibility alias.

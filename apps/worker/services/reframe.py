@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 import math
 from pathlib import Path
@@ -24,6 +24,11 @@ class ReframePlan:
     active_speaker_switches: int = 0
     group_fallback_samples: int = 0
     speaker_hold_samples: int = 0
+    saliency_samples: int = 0
+    subtitle_samples: int = 0
+    subtitle_lower_samples: int = 0
+    scene_cut_times: list[float] = field(default_factory=list)
+    visual_profile: str = "standard"
 
     def to_dict(self) -> dict:
         payload = asdict(self)
@@ -49,6 +54,11 @@ class ReframePlan:
             active_speaker_switches=int(payload.get("active_speaker_switches", 0)),
             group_fallback_samples=int(payload.get("group_fallback_samples", 0)),
             speaker_hold_samples=int(payload.get("speaker_hold_samples", 0)),
+            saliency_samples=int(payload.get("saliency_samples", 0)),
+            subtitle_samples=int(payload.get("subtitle_samples", 0)),
+            subtitle_lower_samples=int(payload.get("subtitle_lower_samples", 0)),
+            scene_cut_times=[float(value) for value in payload.get("scene_cut_times", [])],
+            visual_profile=str(payload.get("visual_profile", "standard")),
         )
 
 
@@ -62,6 +72,125 @@ def load_reframe_plan(path: str | Path) -> ReframePlan:
     return ReframePlan.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
+def _normalize_visual_content(value: str | None) -> str:
+    value = (value or "auto").lower().strip()
+    aliases = {
+        "anime-animation": "anime",
+        "film": "film-tv",
+        "tv": "film-tv",
+        "documentary-educational": "documentary",
+        "gameplay-commentary": "gameplay",
+    }
+    return aliases.get(value, value)
+
+
+def _saliency_center(gray) -> tuple[float, float]:
+    """Return a cheap visual-interest centre and confidence from a low-res gray frame.
+
+    This deliberately avoids a heavyweight ML detector. Gradient energy finds visually
+    busy/important regions while a gentle centre prior prevents the virtual camera from
+    chasing every bright edge in animation or gameplay.
+    """
+    import cv2
+    import numpy as np
+
+    if gray is None or getattr(gray, "size", 0) == 0:
+        return 0.5, 0.0
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    energy = cv2.magnitude(gx, gy)
+    h, w = energy.shape[:2]
+    if h <= 1 or w <= 1:
+        return 0.5, 0.0
+
+    # Ignore the lowest strip where burned-in subtitles / app watermarks often live.
+    usable_h = max(1, int(h * 0.84))
+    energy = energy[:usable_h, :]
+    x = np.linspace(0.0, 1.0, w, dtype=np.float32)
+    center_prior = 0.72 + 0.28 * (1.0 - np.minimum(1.0, np.abs(x - 0.5) / 0.5))
+    column_energy = energy.sum(axis=0) * center_prior
+    total = float(column_energy.sum())
+    if total <= 1e-5:
+        return 0.5, 0.0
+    center = float((column_energy * x).sum() / total)
+    mean_energy = float(energy.mean()) / 255.0
+    confidence = min(1.0, mean_energy * 2.2)
+    return min(0.9, max(0.1, center)), confidence
+
+
+def _burned_subtitle_likelihood(gray) -> float:
+    """Conservative no-OCR heuristic for persistent subtitle-like lower text.
+
+    We look for several small high-contrast components spread horizontally through the
+    lower picture band. A single detailed frame can still fool this, so callers require
+    the signal on multiple sampled frames before moving Clip AI captions.
+    """
+    import cv2
+
+    if gray is None or getattr(gray, "size", 0) == 0:
+        return 0.0
+    h, w = gray.shape[:2]
+    if h < 40 or w < 80:
+        return 0.0
+    y0 = int(h * 0.60)
+    y1 = max(y0 + 1, int(h * 0.94))
+    band = gray[y0:y1, :]
+    # Bright glyph interiors plus Canny edges catches common white/yellow outlined subs.
+    _, bright = cv2.threshold(band, 178, 255, cv2.THRESH_BINARY)
+    edges = cv2.Canny(band, 70, 150)
+    mask = cv2.bitwise_and(bright, cv2.dilate(edges, cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 2)))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    boxes = []
+    band_h = band.shape[0]
+    for contour in contours:
+        x, y, cw, ch = cv2.boundingRect(contour)
+        area = cw * ch
+        if area < 7 or ch < 3 or ch > max(34, int(band_h * 0.42)):
+            continue
+        if cw < 2 or cw > int(w * 0.22):
+            continue
+        boxes.append((x, y, cw, ch))
+
+    if len(boxes) < 4:
+        return min(0.35, len(boxes) / 12.0)
+    left = min(x for x, _y, _cw, _ch in boxes)
+    right = max(x + cw for x, _y, cw, _ch in boxes)
+    span = (right - left) / max(1.0, float(w))
+    count_score = min(1.0, len(boxes) / 12.0)
+    span_score = min(1.0, span / 0.48)
+    return min(1.0, count_score * 0.58 + span_score * 0.42)
+
+
+def _stabilize_track_by_scenes(
+    points: list[tuple[float, float]],
+    scene_cut_times: list[float],
+    **kwargs,
+) -> list[tuple[float, float]]:
+    """Stabilize each shot independently so a new shot never inherits the old crop."""
+    if not points or not scene_cut_times:
+        return _stabilize_camera_track(points, **kwargs)
+    ordered = sorted(points, key=lambda item: item[0])
+    cuts = sorted(cut for cut in scene_cut_times if ordered[0][0] < cut < ordered[-1][0])
+    if not cuts:
+        return _stabilize_camera_track(ordered, **kwargs)
+
+    result: list[tuple[float, float]] = []
+    segment_start = 0
+    for cut in [*cuts, float("inf")]:
+        segment = []
+        while segment_start < len(ordered) and ordered[segment_start][0] < cut:
+            segment.append(ordered[segment_start])
+            segment_start += 1
+        if segment:
+            stabilized = _stabilize_camera_track(segment, **kwargs)
+            if result and stabilized and stabilized[0][0] <= result[-1][0]:
+                stabilized = stabilized[1:]
+            result.extend(stabilized)
+    return result or _stabilize_camera_track(ordered, **kwargs)
+
+
 def plan_smart_reframe(
     media_path: str,
     start: float,
@@ -70,13 +199,13 @@ def plan_smart_reframe(
     target_width: int = 720,
     target_height: int = 1280,
     speech_intervals: list[tuple[float, float]] | None = None,
+    content_type: str | None = None,
 ) -> ReframePlan:
-    """Create a low-cost horizontal framing track.
+    """Create a low-cost, content-aware horizontal framing track.
 
-    v18 adds conservative active-speaker tracking for multi-person scenes. It uses
-    transcript speech timing plus relative lower-face motion as a lightweight proxy
-    for who is talking. If confidence is weak, it frames the group instead of making
-    a risky switch. Sampling is capped for an 8 GB development machine.
+    M4 makes the camera calmer, resets tracking on shot cuts, and adds a saliency
+    fallback for anime/gameplay/documentary footage. All analysis runs only on the
+    chosen clip range and on a <=480px proxy, keeping the local workflow lightweight.
     """
     try:
         import cv2
@@ -93,19 +222,19 @@ def plan_smart_reframe(
         capture.release()
         return ReframePlan("center", [(0.0, 0.5)], 0, 0)
 
+    content = _normalize_visual_content(content_type)
+    visual_profile = "cinematic" if content in {"anime", "film-tv"} else ("visual" if content in {"gameplay", "documentary"} else "standard")
+
     target_ratio = target_width / target_height
     source_ratio = source_width / source_height
-
-    # If the source is already roughly 9:16 (or narrower), preserve the whole frame
-    # instead of trying to chase a subject and cropping vertically.
     if source_ratio <= target_ratio * 1.05:
         capture.release()
-        return ReframePlan("portrait", [(0.0, 0.5)], source_width, source_height)
+        return ReframePlan("portrait", [(0.0, 0.5)], source_width, source_height, visual_profile=visual_profile)
 
     duration = max(0.01, end - start)
-    # Speaker inference benefits from slightly denser samples than the older face-only
-    # tracker. Cap around 120 samples so CPU/RAM use remains reasonable locally.
-    sample_interval = max(0.45, duration / 120.0)
+    sample_cap = 72 if visual_profile == "cinematic" else (90 if visual_profile == "visual" else 120)
+    min_interval = 0.72 if visual_profile == "cinematic" else (0.58 if visual_profile == "visual" else 0.45)
+    sample_interval = max(min_interval, duration / float(sample_cap))
     sample_times: list[float] = []
     t = 0.0
     while t < duration:
@@ -118,21 +247,17 @@ def plan_smart_reframe(
     face_detector = cv2.CascadeClassifier(cascade_path)
 
     keyframes: list[tuple[float, float]] = []
+    scene_cut_times: list[float] = []
     prev_gray = None
+    prev_scene_gray = None
     smoothed_center = 0.5
     previous_face_center: float | None = None
     samples_since_face = 999
-    face_samples = 0
-    motion_samples = 0
-    multi_face_samples = 0
-    scene_cut_samples = 0
-    face_upper_samples = 0
-    face_middle_samples = 0
-    face_lower_samples = 0
-    active_speaker_samples = 0
-    active_speaker_switches = 0
-    group_fallback_samples = 0
-    speaker_hold_samples = 0
+    face_samples = motion_samples = multi_face_samples = scene_cut_samples = 0
+    face_upper_samples = face_middle_samples = face_lower_samples = 0
+    active_speaker_samples = active_speaker_switches = 0
+    group_fallback_samples = speaker_hold_samples = 0
+    saliency_samples = subtitle_samples = subtitle_lower_samples = 0
     active_face_center: float | None = None
     pending_face_center: float | None = None
     pending_face_count = 0
@@ -150,20 +275,50 @@ def plan_smart_reframe(
         resize_width = min(480, w)
         scale = resize_width / w
         resized = cv2.resize(frame, (resize_width, max(2, int(h * scale))))
-        gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
-        gray = cv2.equalizeHist(gray)
+        raw_gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+        gray = cv2.equalizeHist(raw_gray)
+
+        saliency_center, saliency_conf = _saliency_center(gray)
+        if saliency_conf >= 0.035:
+            saliency_samples += 1
+
+        subtitle_score = _burned_subtitle_likelihood(gray)
+        if subtitle_score >= 0.54:
+            subtitle_samples += 1
+            subtitle_lower_samples += 1
+
+        changed_fraction = 0.0
+        motion_mask = None
+        cut_detected = False
+        if prev_scene_gray is not None and prev_scene_gray.shape == raw_gray.shape:
+            diff = cv2.absdiff(raw_gray, prev_scene_gray)
+            mean_change = float(diff.mean()) / 255.0
+            diff_blur = cv2.GaussianBlur(diff, (9, 9), 0)
+            _, motion_mask = cv2.threshold(diff_blur, 24, 255, cv2.THRESH_BINARY)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_OPEN, kernel)
+            changed_fraction = float(cv2.countNonZero(motion_mask)) / float(motion_mask.size)
+            cut_detected = changed_fraction > 0.64 and mean_change > 0.10
+
+        if cut_detected:
+            scene_cut_samples += 1
+            scene_cut_times.append(local_t)
+            if keyframes:
+                keyframes.append((max(keyframes[-1][0], local_t - 0.012), smoothed_center))
+            # New shot = new framing decision. Do not inherit a face/speaker target.
+            smoothed_center = 0.5
+            previous_face_center = None
+            active_face_center = None
+            pending_face_center = None
+            pending_face_count = 0
+            samples_since_face = 999
+            samples_since_active = 999
 
         raw_center: float | None = None
         source_kind = "center"
-
         faces = ()
         if not face_detector.empty():
-            faces = face_detector.detectMultiScale(
-                gray,
-                scaleFactor=1.15,
-                minNeighbors=4,
-                minSize=(28, 28),
-            )
+            faces = face_detector.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=4, minSize=(28, 28))
 
         if len(faces):
             face_samples += 1
@@ -176,9 +331,6 @@ def plan_smart_reframe(
 
             largest_area = max(item[6] for item in face_data)
             important = [item for item in face_data if item[6] >= largest_area * 0.35]
-
-            # Keep a lightweight vertical occupancy summary. Caption rendering can use
-            # this later to avoid sitting directly over the dominant face region.
             weighted_y = sum(item[5] * item[6] for item in important) / max(1.0, sum(item[6] for item in important))
             if weighted_y < 0.38:
                 face_upper_samples += 1
@@ -192,50 +344,33 @@ def plan_smart_reframe(
                 left = min(item[0] for item in important)
                 right = max(item[0] + item[2] for item in important)
                 group_center = ((left + right) / 2.0) / resized.shape[1]
-
-                # Only infer an active speaker while Whisper says speech is happening.
-                # Relative lower-face motion is compared with upper-face motion so a
-                # simple head turn is less likely to be mistaken for speech.
                 source_time = start + local_t
                 speech_now = _speech_active(source_time, speech_intervals)
                 activity = []
-                if speech_now and prev_gray is not None and prev_gray.shape == gray.shape:
+                # Active-speaker chasing is intentionally disabled for cinematic media.
+                if visual_profile == "standard" and speech_now and prev_gray is not None and prev_gray.shape == gray.shape and not cut_detected:
                     for item in important:
                         x, y, fw, fh, center, _cy, area = item
-                        score = _relative_mouth_activity(gray, prev_gray, x, y, fw, fh)
-                        activity.append((score, center, area))
+                        activity.append((_relative_mouth_activity(gray, prev_gray, x, y, fw, fh), center, area))
 
                 chosen_center: float | None = None
                 if activity:
                     activity.sort(key=lambda item: item[0], reverse=True)
                     top_score, top_center, _top_area = activity[0]
                     second_score = activity[1][0] if len(activity) > 1 else 0.0
-                    # Conservative threshold + margin. Uncertain frames stay on the group.
                     confident = top_score >= 0.010 and top_score >= second_score + 0.0035
                     if confident:
-                        active_visible_now = (
-                            active_face_center is not None
-                            and any(abs(item[4] - active_face_center) <= 0.18 for item in important)
-                        )
-                        if active_face_center is None:
+                        active_visible_now = active_face_center is not None and any(abs(item[4] - active_face_center) <= 0.18 for item in important)
+                        if active_face_center is None or not active_visible_now:
+                            if active_face_center is not None:
+                                active_speaker_switches += 1
                             active_face_center = top_center
                             pending_face_center = None
                             pending_face_count = 0
-                            chosen_center = active_face_center
-                        elif not active_visible_now:
-                            # The previous speaker disappeared (shot change / camera cut).
-                            # Move to the clear new candidate immediately instead of
-                            # spending a sample framed on an empty part of the shot.
-                            active_face_center = top_center
-                            active_speaker_switches += 1
-                            pending_face_center = None
-                            pending_face_count = 0
-                            chosen_center = active_face_center
                         elif abs(top_center - active_face_center) <= 0.17:
-                            active_face_center = active_face_center * 0.68 + top_center * 0.32
+                            active_face_center = active_face_center * 0.72 + top_center * 0.28
                             pending_face_center = None
                             pending_face_count = 0
-                            chosen_center = active_face_center
                         else:
                             if pending_face_center is not None and abs(top_center - pending_face_center) <= 0.12:
                                 pending_face_count += 1
@@ -243,13 +378,12 @@ def plan_smart_reframe(
                             else:
                                 pending_face_center = top_center
                                 pending_face_count = 1
-                            # Two consecutive samples are required before a hard speaker switch.
                             if pending_face_count >= 2:
                                 active_face_center = pending_face_center
                                 active_speaker_switches += 1
                                 pending_face_center = None
                                 pending_face_count = 0
-                            chosen_center = active_face_center
+                        chosen_center = active_face_center
 
                 if chosen_center is not None:
                     raw_center = chosen_center
@@ -258,17 +392,13 @@ def plan_smart_reframe(
                     source_kind = "speaker"
                 else:
                     samples_since_active += 1
-                    # Briefly hold the prior speaker during uncertain samples, but do not
-                    # chase them forever. This avoids twitchy back-and-forth framing.
-                    visible_active = (
-                        active_face_center is not None
-                        and any(abs(item[4] - active_face_center) <= 0.18 for item in important)
-                    )
-                    if speech_now and visible_active and samples_since_active <= 2:
-                        raw_center = active_face_center
-                        speaker_hold_samples += 1
-                        source_kind = "speaker_hold"
-                    else:
+                    if visual_profile == "standard" and speech_now and active_face_center is not None and samples_since_active <= 2:
+                        visible_active = any(abs(item[4] - active_face_center) <= 0.18 for item in important)
+                        if visible_active:
+                            raw_center = active_face_center
+                            speaker_hold_samples += 1
+                            source_kind = "speaker_hold"
+                    if raw_center is None:
                         raw_center = group_center
                         group_fallback_samples += 1
                         source_kind = "face_group"
@@ -286,69 +416,86 @@ def plan_smart_reframe(
             samples_since_face = 0
         else:
             samples_since_face += 1
-            # Avoid the crop jumping away just because Haar misses the face for a frame or two.
-            if previous_face_center is not None and samples_since_face <= 2:
+            if previous_face_center is not None and samples_since_face <= (1 if visual_profile == "cinematic" else 2) and not cut_detected:
                 raw_center = previous_face_center
                 source_kind = "face_hold"
-            elif prev_gray is not None and prev_gray.shape == gray.shape:
-                diff = cv2.absdiff(gray, prev_gray)
-                diff = cv2.GaussianBlur(diff, (9, 9), 0)
-                _, mask = cv2.threshold(diff, 24, 255, cv2.THRESH_BINARY)
-                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-                changed_fraction = float(cv2.countNonZero(mask)) / float(mask.size)
+            elif not cut_detected and motion_mask is not None and 0.004 <= changed_fraction <= 0.64:
+                moments = cv2.moments(motion_mask, binaryImage=True)
+                if moments["m00"] > 0:
+                    raw_center = (moments["m10"] / moments["m00"]) / motion_mask.shape[1]
+                    motion_samples += 1
+                    source_kind = "motion"
 
-                # Tiny changes are usually codec noise. Very large full-frame changes
-                # are useful evidence of an edit/scene cut, which makes Auto preserve
-                # more composition instead of treating everything as gameplay motion.
-                if changed_fraction > 0.72:
-                    scene_cut_samples += 1
-                elif 0.004 <= changed_fraction <= 0.72:
-                    moments = cv2.moments(mask, binaryImage=True)
-                    if moments["m00"] > 0:
-                        raw_center = (moments["m10"] / moments["m00"]) / mask.shape[1]
-                        motion_samples += 1
-                        source_kind = "motion"
+        # For visual media, use saliency as a stable fallback and damp face chasing.
+        if visual_profile == "cinematic":
+            visual_target = saliency_center if saliency_conf >= 0.035 else 0.5
+            if raw_center is None:
+                raw_center = visual_target
+                source_kind = "saliency"
+            else:
+                raw_center = 0.52 * 0.5 + 0.28 * raw_center + 0.20 * visual_target
+                source_kind = "saliency"
+        elif visual_profile == "visual" and (raw_center is None or source_kind == "motion") and saliency_conf >= 0.035:
+            if raw_center is None:
+                raw_center = saliency_center
+            else:
+                raw_center = raw_center * 0.45 + saliency_center * 0.55
+            source_kind = "saliency"
 
         if raw_center is None or not math.isfinite(raw_center):
             raw_center = 0.5
             source_kind = "center"
 
-        # Keep the crop from hugging the extreme edge and smooth hard jumps.
         raw_center = min(0.90, max(0.10, raw_center))
+        if cut_detected and visual_profile == "cinematic":
+            # Start a new anime/film shot centered; only sustained evidence may move it.
+            raw_center = 0.5
+
         delta = raw_center - smoothed_center
-        max_step = 0.095 if source_kind.startswith("speaker") else (0.11 if source_kind.startswith("face") else 0.08)
+        if visual_profile == "cinematic":
+            max_step = 0.050
+            alpha = 0.30
+        elif visual_profile == "visual":
+            max_step = 0.070
+            alpha = 0.38
+        else:
+            max_step = 0.095 if source_kind.startswith("speaker") else (0.11 if source_kind.startswith("face") else 0.08)
+            alpha = 0.56 if source_kind.startswith("speaker") else (0.62 if source_kind.startswith("face") else 0.42)
         delta = min(max_step, max(-max_step, delta))
-        alpha = 0.56 if source_kind.startswith("speaker") else (0.62 if source_kind.startswith("face") else 0.42)
         smoothed_center += delta * alpha
         smoothed_center = min(0.90, max(0.10, smoothed_center))
         keyframes.append((local_t, smoothed_center))
         prev_gray = gray
+        prev_scene_gray = raw_gray
 
     capture.release()
-
     if not keyframes:
-        return ReframePlan("center", [(0.0, 0.5)], source_width, source_height)
+        return ReframePlan("center", [(0.0, 0.5)], source_width, source_height, visual_profile=visual_profile)
 
-    # Guarantee an anchor at the beginning and the end for smooth interpolation.
     if keyframes[0][0] > 0.01:
         keyframes.insert(0, (0.0, keyframes[0][1]))
     if keyframes[-1][0] < duration:
         keyframes.append((duration, keyframes[-1][1]))
 
-    # v19.1: treat detected subject motion as a *target*, not a command to move the
-    # camera every sample. A generous dead zone keeps the crop locked while a face
-    # naturally shifts, nods, or the detector wobbles. Only sustained/large movement
-    # causes a correction, and the correction moves just enough to restore headroom.
-    keyframes = _stabilize_camera_track(keyframes)
+    stabilize_kwargs = {}
+    if visual_profile == "cinematic":
+        stabilize_kwargs = dict(dead_zone=0.11, settle_zone=0.075, trigger_samples=3, immediate_distance=0.22, min_move=0.022, max_speed_per_second=0.09)
+    elif visual_profile == "visual":
+        stabilize_kwargs = dict(dead_zone=0.09, settle_zone=0.06, trigger_samples=2, immediate_distance=0.19, min_move=0.020, max_speed_per_second=0.12)
+    keyframes = _stabilize_track_by_scenes(keyframes, scene_cut_times, **stabilize_kwargs)
 
     meaningful_speaker = active_speaker_samples >= max(2, math.ceil(successful_samples * 0.06))
     meaningful_face = face_samples >= max(2, math.ceil(successful_samples * 0.12))
     meaningful_motion = motion_samples >= max(2, math.ceil(successful_samples * 0.12))
-    if meaningful_speaker:
+    meaningful_saliency = saliency_samples >= max(2, math.ceil(successful_samples * 0.18))
+    if visual_profile == "cinematic" and meaningful_saliency:
+        mode = "saliency"
+    elif meaningful_speaker:
         mode = "speaker"
     elif meaningful_face:
         mode = "face"
+    elif meaningful_saliency and visual_profile == "visual":
+        mode = "saliency"
     elif meaningful_motion:
         mode = "motion"
     else:
@@ -372,8 +519,12 @@ def plan_smart_reframe(
         active_speaker_switches=active_speaker_switches,
         group_fallback_samples=group_fallback_samples,
         speaker_hold_samples=speaker_hold_samples,
+        saliency_samples=saliency_samples,
+        subtitle_samples=subtitle_samples,
+        subtitle_lower_samples=subtitle_lower_samples,
+        scene_cut_times=scene_cut_times,
+        visual_profile=visual_profile,
     )
-
 
 
 def _stabilize_camera_track(

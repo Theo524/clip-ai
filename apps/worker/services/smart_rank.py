@@ -21,7 +21,24 @@ DURATION_GUIDES = {
     "podcast": (20, 60), "documentary": (25, 75), "gameplay": (15, 50),
     "other": (12, 60),
 }
-RANKING_VERSION = "m2.1"
+RANKING_VERSION = "m5-duration-v1"
+
+
+def duration_bounds(content_type: str, preference: str = "auto") -> tuple[int, int]:
+    """Return soft target bounds without turning clip length into a hard cutoff."""
+    low, high = DURATION_GUIDES.get(content_type, DURATION_GUIDES["other"])
+    pref = (preference or "auto").lower().strip()
+    if pref == "short":
+        short_low = max(8, round(low * 0.65))
+        short_high = max(short_low + 8, round(high * 0.72))
+        return short_low, min(60, short_high)
+    if pref == "longer":
+        long_low = max(low, round(low * 1.15))
+        long_high = min(120, max(long_low + 18, round(high * 1.45)))
+        return long_low, long_high
+    # Auto and Balanced use the content-aware guide. Auto still allows natural
+    # boundary extension beyond this range when the thought needs it.
+    return low, high
 
 
 @dataclass(frozen=True)
@@ -127,12 +144,13 @@ def _ending_quality(segment: TranscriptSegment, next_segment: TranscriptSegment 
 
 
 def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
-                            context: ContentContext, *, shot_boundaries: list[float] | tuple[float, ...] = ()) -> list[ClipCandidate]:
+                            context: ContentContext, *, shot_boundaries: list[float] | tuple[float, ...] = (),
+                            duration_preference: str = "auto") -> list[ClipCandidate]:
     if not segments or max_clips < 1:
         return []
     scenes = segment_scenes(segments, context, shot_boundaries)
     shot_times = sorted(shot_boundaries)
-    low, high = DURATION_GUIDES.get(context.resolved_type, DURATION_GUIDES["other"])
+    low, high = duration_bounds(context.resolved_type, duration_preference)
     candidates: list[tuple[ClipCandidate, int, str]] = []
     for scene_id, scene in enumerate(scenes):
         scene_start, scene_end = segments[scene.first].start, segments[scene.last].end
@@ -146,7 +164,7 @@ def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
             for end_index in range(start_index, min(scene.last + 1, start_index + 38)):
                 end_seg = segments[end_index]
                 duration = end_seg.end - start_seg.start
-                if duration > min(95, high + 20):
+                if duration > min(145, high + 25):
                     break
                 text_parts.append(end_seg.text)
                 if duration < max(5.0, low - 5):
@@ -216,6 +234,7 @@ def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
                     context={"moment_type": _moment_type(text), "scene_id": scene_id,
                              "scene_start": round(scene_start, 3), "scene_end": round(scene_end, 3),
                              "quality_warnings": warnings, "shot_changes": cuts if shot_times else None,
+                             "duration_preference": (duration_preference or "auto"),
                              "transcript_confidence": round(confidence, 3) if confidence is not None else None},
                 )
                 candidates.append((clip, scene_id, text))

@@ -34,7 +34,7 @@ def test_project_migration_adds_v22_context_defaults(tmp_path):
     job.mkdir()
     (job / "project.json").write_text(json.dumps({"title": "Old", "clips": []}), encoding="utf-8")
     data = load_project(job)
-    assert data["schema_version"] == 22
+    assert data["schema_version"] == 23
     assert data["processing_profile"] == "balanced"
     assert data["status"] == "queued"
     assert data["transcript_revision"] == 0
@@ -42,6 +42,8 @@ def test_project_migration_adds_v22_context_defaults(tmp_path):
     assert data["resolved_content_type"] == "other"
     assert data["content_structure"] == "auto"
     assert data["resolved_content_structure"] == "single-story"
+    assert data["duration_preference"] == "auto"
+    assert data["project_notes"] == ""
 
 
 def test_project_save_is_merge_safe(tmp_path):

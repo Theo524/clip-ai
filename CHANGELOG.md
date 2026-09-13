@@ -1,5 +1,49 @@
 # Changelog
 
+## 22.0.0-M5 · Editing & Workflow
+
+- Locked Anime + Cinematic + Focus captions to the lower in-frame position and moved the anchor lower (88% of the picture height).
+- Added 9-second 540×960 Quick Preview renders that stay out of Saved renders.
+- Added Auto / Short / Balanced / Longer story clip-length preferences with natural-boundary scoring.
+- Added Render #1 only alongside Render all 3.
+- Added persisted rejection reasons for replacement suggestions.
+- Added private local project notes.
+- Added ±100 ms caption timing nudge controls.
+- Scaled Focus/Backdrop window geometry and caption font metrics proportionally for preview resolution.
+- Project schema advanced to 23 with additive migration defaults.
+- Backend validation: 85 tests passed.
+
+
+## 22.0.0-M4.2 · Anime cinematic framing correction
+
+- Anime Auto now uses the classic black-canvas Focus layout with the Compact central window.
+- The picture occupies 800/1280 px vertically (62.5%, or 3.75/6 of the screen).
+- Cinematic anime captions stay low inside the picture instead of floating in the black bars.
+- Existing burned-in subtitle detection can still move captions upward when overlap would be likely.
+- M4 calmer tracking, scene-cut resets, saliency fallback, and M1-M3 intelligence remain unchanged.
+
+# Changelog
+
+## 22.0.0-M4.1 · Anime framing hotfix
+
+- Restores the familiar central cinematic framing for Anime Auto instead of forcing a tiny full-frame Preserve layout.
+- Keeps M4 calmer tracking, scene-cut resets, burned-in subtitle avoidance and Cinematic caption behavior.
+- Anime Auto now uses Focus + Balanced framing with Cinematic captions. Manual Preserve remains available.
+
+## 22.0.0-M4 · Visual & Caption Intelligence
+
+- Anime/Animation Auto now preserves the full source composition in the vertical canvas and defaults to restrained Cinematic captions.
+- Widescreen Preserve is now an intentional framing choice, not a portrait-only special case; captions remain anchored inside the actual visible picture.
+- Adds calmer content-aware crop tracking with fewer proxy samples, larger dead-zones and slower movement for anime/film.
+- Adds shot-change detection/reset so a new scene does not inherit stale face/speaker framing from the previous shot.
+- Adds lightweight saliency tracking for anime/gameplay/documentary footage as an alternative to face chasing.
+- Adds conservative burned-in subtitle detection; Auto moves Clip AI captions away from repeated lower subtitle bands and reports the adjustment.
+- Caption density is content-aware; anime/film Cinematic captions are smaller and use shorter phrases.
+- Public Meme + Viral Pop presentation choices are merged into **Viral** while legacy `meme` project/request values remain accepted and map safely to Viral.
+- Keeps platform-specific TikTok/Shorts/Reels safe zones and M1-M3 ranking/metadata behavior unchanged.
+- Adds a safer Windows `UPDATE_CLIP_AI_M4.bat` that removes stale code/tests while preserving `.git`, `.venv`, local work/projects and settings, then runs tests/build/start without closing on errors.
+- Backend regression suite passes 78 tests.
+
 ## 22.0.0-M3 · Titles & Social Metadata
 
 - Replaces raw transcript-line titles with a context-aware local copy pass that favors complete, central moments and cleaner headline phrasing.

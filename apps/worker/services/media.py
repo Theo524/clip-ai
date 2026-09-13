@@ -181,7 +181,7 @@ def render_adaptive_short(
     elif layout_mode in {"focus", "backdrop"}:
         win_x, win_y, win_w, win_h = content_window(frame_size, width, height)
         crop_x = build_crop_x_expression(reframe_plan)
-        pad_color = "0x08080A"
+        pad_color = "0x000000" if layout_mode == "focus" else "0x08080A"
         if layout_mode == "focus":
             graph = (
                 "[0:v]setpts=PTS-STARTPTS,"

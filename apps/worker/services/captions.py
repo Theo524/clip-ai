@@ -3,7 +3,7 @@ from pathlib import Path
 import re
 
 from models import TranscriptSegment, TranscriptWord
-from services.layouts import content_window, normalize_frame_size
+from services.layouts import normalize_frame_size, picture_window
 
 
 STYLE_CONFIG = {
@@ -56,6 +56,23 @@ STYLE_CONFIG = {
         "shadow": 1,
     },
 }
+
+
+def _effective_style_config(style: str, content_type: str | None = None) -> dict:
+    """Return a copy of the visual/density config with content-aware tuning."""
+    cfg = dict(STYLE_CONFIG[style])
+    content = (content_type or "auto").lower().strip()
+    if content == "anime" and style == "cinematic":
+        # Anime works best with restrained, low text that leaves the artwork readable.
+        cfg.update(size=36, max_words=7, max_chars=38, max_duration=3.8, pause_break=0.76)
+    elif content == "film-tv" and style == "cinematic":
+        cfg.update(size=37, max_words=8, max_chars=44, max_duration=4.0, pause_break=0.74)
+    elif content == "documentary" and style in {"clean", "cinematic"}:
+        cfg.update(max_words=8, max_chars=46, max_duration=4.2)
+    elif content == "meme-comedy" and style == "viral":
+        cfg.update(max_words=5, max_chars=30, max_duration=2.5, pause_break=0.42)
+    return cfg
+
 
 _FILLER_WORDS = {"um", "uh", "erm", "er", "hmm", "mm", "uhm"}
 _WEAK_EDGE_WORDS = {
@@ -165,6 +182,9 @@ def _caption_position(
     height: int,
     caption_zone: str = "auto",
     platform: str = "auto",
+    source_width: int = 0,
+    source_height: int = 0,
+    content_type: str = "auto",
 ) -> tuple[int, int]:
     """Place captions inside the picture and nudge them away from platform UI."""
     x = width // 2
@@ -175,9 +195,19 @@ def _caption_position(
     ratios = {"upper": 0.34, "middle": 0.61, "lower": 0.85}
     ratio = ratios[zone]
 
+    content = (content_type or "auto").lower().strip()
+    anime_cinematic_lower = content == "anime" and style == "cinematic" and zone == "lower" and layout == "focus"
+    if anime_cinematic_lower:
+        # Anime's cinematic preset is intentionally anchored near the bottom edge of
+        # the picture itself. 0.88 leaves enough room for two short lines while
+        # keeping the text out of the visual centre.
+        ratio = 0.88
+
     platform = (platform or "auto").lower().strip()
-    # Lower captions are the ones most likely to collide with app chrome.
-    if zone == "lower":
+    # Lower captions are the ones most likely to collide with app chrome. Anime's
+    # compact central window already leaves black canvas below it, so its Cinematic
+    # captions can safely remain low inside the actual picture.
+    if zone == "lower" and not anime_cinematic_lower:
         if platform == "tiktok":
             ratio = min(ratio, 0.77)
         elif platform == "shorts":
@@ -185,9 +215,12 @@ def _caption_position(
         elif platform == "reels":
             ratio = min(ratio, 0.80)
 
-    if layout in {"focus", "backdrop"}:
-        _wx, top, _ww, window_h = content_window(frame_size, width, height)
-        return x, int(top + window_h * ratio)
+    if layout in {"focus", "backdrop", "preserve"}:
+        left, top, window_w, window_h = picture_window(
+            layout, frame_size, source_width, source_height, width, height
+        )
+        # Keep the anchor centered inside the actual picture, not the black bars.
+        return int(left + window_w / 2), int(top + window_h * ratio)
 
     return x, int(height * ratio)
 
@@ -200,10 +233,15 @@ def _cue_override(
     height: int,
     caption_zone: str = "auto",
     platform: str = "auto",
+    source_width: int = 0,
+    source_height: int = 0,
+    content_type: str = "auto",
     *,
     phrase_transition: bool = True,
 ) -> str:
-    x, y = _caption_position(style, layout, frame_size, width, height, caption_zone, platform)
+    x, y = _caption_position(
+        style, layout, frame_size, width, height, caption_zone, platform, source_width, source_height, content_type
+    )
     pos = fr"\an2\pos({x},{y})"
     if not phrase_transition:
         return "{" + pos + "}"
@@ -216,8 +254,12 @@ def _cue_override(
     return "{" + pos + r"\fad(55,70)}"
 
 
-def _style_line(style: str) -> str:
-    cfg = STYLE_CONFIG[style]
+def _style_line(style: str, content_type: str | None = None, width: int = 720) -> str:
+    cfg = _effective_style_config(style, content_type)
+    scale = max(0.55, min(1.0, width / 720.0))
+    cfg["size"] = max(20, round(cfg["size"] * scale))
+    cfg["outline"] = max(1, round(cfg["outline"] * scale))
+    cfg["shadow"] = max(0, round(cfg["shadow"] * scale))
     return (
         "Style: Default,"
         f"{cfg['font']},{cfg['size']},{cfg['primary']},&H000000FF,&H00000000,&H78000000,"
@@ -309,11 +351,11 @@ def _rebalance_phrases(phrases: list[PhraseCue], max_words: int, max_chars: int)
     return [phrase for phrase in phrases if phrase.words]
 
 
-def _make_phrases(words: list[WordCue], style: str) -> list[PhraseCue]:
+def _make_phrases(words: list[WordCue], style: str, content_type: str | None = None) -> list[PhraseCue]:
     if not words:
         return []
 
-    cfg = STYLE_CONFIG[style]
+    cfg = _effective_style_config(style, content_type)
     max_words = int(cfg["max_words"])
     max_chars = int(cfg["max_chars"])
     max_duration = float(cfg["max_duration"])
@@ -348,8 +390,10 @@ def _make_phrases(words: list[WordCue], style: str) -> list[PhraseCue]:
     return _rebalance_phrases(phrases, max_words, max_chars)
 
 
-def _styled_phrase_text(phrase: PhraseCue, active_index: int, style: str) -> str:
-    cfg = STYLE_CONFIG[style]
+def _styled_phrase_text(
+    phrase: PhraseCue, active_index: int, style: str, content_type: str | None = None
+) -> str:
+    cfg = _effective_style_config(style, content_type)
     output: list[str] = []
     for index, word in enumerate(phrase.words):
         text = _escape_ass(word.text.upper() if style == "meme" else word.text)
@@ -414,15 +458,18 @@ def write_clip_ass(
     caption_offset_ms: int = 0,
     caption_zone: str = "auto",
     platform: str = "auto",
+    content_type: str = "auto",
+    source_width: int = 0,
+    source_height: int = 0,
 ) -> tuple[str, bool]:
     """Write readable in-frame ASS captions with exact word timing when available."""
     style = caption_style if caption_style in STYLE_CONFIG else "clean"
     frame_size = normalize_frame_size(frame_size)
-    cfg = STYLE_CONFIG[style]
+    cfg = _effective_style_config(style, content_type)
     offset_seconds = caption_offset_ms / 1000.0
 
     words = _words_in_clip(segments, clip_start, clip_end, offset_seconds)
-    phrases = _make_phrases(words, style)
+    phrases = _make_phrases(words, style, content_type)
     word_timed = bool(phrases)
 
     header = f"""[Script Info]
@@ -434,17 +481,19 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
-{_style_line(style)}
+{_style_line(style, content_type, width)}
 
 [Events]
 Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 """
     lines = [header.rstrip()]
     phrase_override = _cue_override(
-        style, layout_mode, frame_size, width, height, caption_zone, platform, phrase_transition=True
+        style, layout_mode, frame_size, width, height, caption_zone, platform,
+        source_width, source_height, content_type, phrase_transition=True
     )
     stable_override = _cue_override(
-        style, layout_mode, frame_size, width, height, caption_zone, platform, phrase_transition=False
+        style, layout_mode, frame_size, width, height, caption_zone, platform,
+        source_width, source_height, content_type, phrase_transition=False
     )
 
     if word_timed:
@@ -456,7 +505,7 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
                         cue_end = max(phrase.words[index + 1].start, cue_start + 0.05)
                     else:
                         cue_end = max(phrase.end, cue_start + 0.05)
-                    display = _styled_phrase_text(phrase, index, style)
+                    display = _styled_phrase_text(phrase, index, style, content_type)
                     lines.append(
                         f"Dialogue: 0,{_ass_time(cue_start)},{_ass_time(cue_end)},Default,,0,0,0,,{stable_override}{display}"
                     )

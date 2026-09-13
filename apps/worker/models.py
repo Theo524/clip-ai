@@ -2,6 +2,7 @@ from typing import Literal
 
 ContentType = Literal["auto", "podcast", "anime", "film-tv", "documentary", "meme-comedy", "gameplay", "other"]
 ContentStructure = Literal["auto", "single-story", "compilation", "conversation"]
+DurationPreference = Literal["auto", "short", "balanced", "longer"]
 
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -14,6 +15,7 @@ class AnalyzeRequest(BaseModel):
     content_type: ContentType = "auto"
     content_structure: ContentStructure = "auto"
     subject_hint: str | None = Field(default=None, max_length=160)
+    duration_preference: DurationPreference = "auto"
 
 
 class YouTubeInfoResponse(BaseModel):
@@ -91,6 +93,7 @@ class RenderClipRequest(BaseModel):
     caption_offset_ms: int = Field(default=0, ge=-1000, le=1000)
     platform: Literal["auto", "shorts", "tiktok", "reels"] = "auto"
     cover_offset_seconds: float | None = Field(default=None, ge=0, le=180)
+    preview: bool = False
 
 
 class RenderClipResponse(BaseModel):
@@ -120,6 +123,11 @@ class RenderClipResponse(BaseModel):
     platform: str | None = None
     cover_url: str | None = None
     auto_profile: str | None = None
+    saliency_samples: int | None = None
+    scene_cut_samples: int | None = None
+    subtitle_samples: int | None = None
+    burned_in_subtitles: bool | None = None
+    visual_warnings: list[str] = Field(default_factory=list)
 
 
 class SavedRender(BaseModel):
@@ -150,6 +158,8 @@ class ProjectSummary(BaseModel):
     content_structure: str = "auto"
     resolved_content_structure: str = "single-story"
     subject_hint: str | None = None
+    duration_preference: str = "auto"
+    project_notes: str = ""
     context_confidence: float = 0.0
 
 
@@ -201,6 +211,17 @@ class TranscriptRangeResponse(BaseModel):
 class CoverRequest(BaseModel):
     filename: str = Field(min_length=1, max_length=240)
     at_seconds: float = Field(ge=0, le=180)
+
+
+
+
+class ProjectNotesUpdateRequest(BaseModel):
+    notes: str = Field(default="", max_length=2000)
+
+
+class ClipFeedbackRequest(BaseModel):
+    reason: Literal["bad-moment", "too-short", "bad-ending", "wrong-crop", "duplicate", "other"]
+    note: str = Field(default="", max_length=500)
 
 
 class SystemCheck(BaseModel):

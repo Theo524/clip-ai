@@ -1,6 +1,6 @@
-# Clip AI v22 M2 checkpoint checklist
+# Clip AI v22 M4 checkpoint checklist
 
-Use this checklist before declaring M2 stable. Keep the M1/v21 reliability checks below, especially render and recovery.
+Use this checklist before declaring M4 stable. Keep the M1-M3/v21 reliability checks below, especially render and recovery.
 
 ## M2 clip intelligence (test with a newly analyzed source)
 - [ ] A comedy/meme source can produce a short complete 8–15 second moment; no forced 20–25 second padding.
@@ -63,3 +63,14 @@ Use this checklist before declaring M2 stable. Keep the M1/v21 reliability check
 - [ ] Clean temporary files leaves finished projects/renders intact.
 - [ ] Backend test suite passes.
 - [ ] Frontend core TSX syntax/transpilation check passes.
+
+## M4 visual / anime checks
+
+- [ ] Anime + Auto resolves to Preserve frame + Cinematic captions.
+- [ ] Widescreen anime shows the full composition rather than a tight face crop.
+- [ ] Cinematic captions sit low inside the picture, not in the black bar.
+- [ ] A clip with existing lower subtitles moves Clip AI captions upward and shows a warning.
+- [ ] Rapid anime/film cuts do not drag the previous face position into the next shot.
+- [ ] Podcast/talking-head footage still follows a clearly active speaker when appropriate.
+- [ ] Viral appears as one style in the UI; old projects saved as Meme still render.
+- [ ] TikTok / Shorts / Reels lower safe-zone nudges still work.

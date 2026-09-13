@@ -1421,3 +1421,25 @@ h1 {
 .contextGrid{display:grid;grid-template-columns:1fr 1fr;gap:9px}.contextGrid label,.subjectHintField{display:flex;flex-direction:column;gap:6px;color:#9fa6b9;font-size:10px;font-weight:750}.contextGrid select,.subjectHintField input{width:100%;min-width:0;background:#0d1020;color:#f5f6fb;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:10px 11px;outline:none;font:inherit;font-size:11px}.contextGrid select:focus,.subjectHintField input:focus{border-color:rgba(139,124,255,.42);box-shadow:0 0 0 3px rgba(139,124,255,.06)}.subjectHintField{margin-top:9px}.subjectHintField span small{font-weight:500;color:#737b90}.contextPanel>p{margin:9px 1px 0;color:#70788d;font-size:10px;line-height:1.45}.compactContext{margin:12px 0}
 .contextSummary{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:-6px 0 18px;padding:10px 12px;border:1px solid rgba(139,124,255,.12);border-radius:13px;background:rgba(139,124,255,.035);text-align:left}.contextSummary span{display:inline-flex;align-items:center;gap:6px;color:#c9cde0;font-size:11px;border:1px solid rgba(255,255,255,.07);background:rgba(6,8,13,.42);border-radius:999px;padding:5px 8px}.contextSummary b{color:#8f96aa;font-size:9px;text-transform:uppercase;letter-spacing:.07em}.contextSummary small{color:#727a8f;font-size:10px;line-height:1.4}
 @media(max-width:620px){.contextGrid{grid-template-columns:1fr}.contextPanelHead{flex-direction:column}.contextSummary{align-items:flex-start}}
+
+/* v22 M4 visual intelligence notices */
+.visualWarnings {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(151, 120, 255, 0.22);
+  border-radius: 14px;
+  background: rgba(111, 76, 255, 0.08);
+}
+
+.visualWarnings span {
+  color: rgba(239, 235, 255, 0.9);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+/* v22 M5 · editing & workflow */
+.contextGrid{grid-template-columns:repeat(3,minmax(0,1fr))}
+.bestRenderModes{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.previewButton,.previewAction{border:1px solid rgba(79,209,255,.18)!important;background:rgba(79,209,255,.07)!important;color:#cdefff!important}.feedbackSelect{max-width:132px;background:#0d1020;color:#d9deed;border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:7px 8px;font-size:10px}.previewRendered{border-color:rgba(79,209,255,.15)!important;background:rgba(79,209,255,.035)!important}.previewRendered small{display:block;color:#818ba3;font-size:10px;line-height:1.35;margin-top:3px}.projectNotesPanel{display:grid;grid-template-columns:minmax(160px,.7fr) minmax(260px,2fr) auto;gap:10px;align-items:center;margin-bottom:14px;padding:14px;border:1px solid rgba(139,124,255,.12);border-radius:14px;background:rgba(139,124,255,.035)}.projectNotesPanel>div{display:flex;flex-direction:column;gap:3px}.projectNotesPanel strong{font-size:12px}.projectNotesPanel small{font-size:10px;color:#858da2}.projectNotesPanel textarea{resize:vertical;min-height:48px;background:#0d1020;color:#f5f6fb;border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:10px;line-height:1.4}.syncNudges{display:flex;justify-content:center;gap:7px;margin:8px 0}.syncNudges button{border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.035);color:#aeb6ca;border-radius:8px;padding:5px 8px;font-size:10px;cursor:pointer}.syncNudges button:hover{color:#fff;border-color:rgba(139,124,255,.25)}
+@media(max-width:760px){.contextGrid{grid-template-columns:1fr}.projectNotesPanel{grid-template-columns:1fr}.bestRenderModes{width:100%}.feedbackSelect{max-width:none}}

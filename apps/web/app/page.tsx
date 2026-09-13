@@ -23,6 +23,7 @@ type Clip = {
     moment_type?: string;
     scene_id?: number;
     quality_warnings?: string[];
+    user_feedback?: { reason?: string; note?: string };
   };
 };
 
@@ -107,6 +108,8 @@ type ProjectDetail = {
   content_structure?: string;
   resolved_content_structure?: string;
   subject_hint?: string | null;
+  duration_preference?: string;
+  project_notes?: string;
   context_confidence?: number;
   clips: Clip[];
   renders: SavedRender[];
@@ -120,6 +123,7 @@ type CopyStyle = "auto" | "viral" | "clean" | "cinematic";
 type ProcessingProfile = "low-memory" | "balanced" | "fast";
 type ContentType = "auto" | "podcast" | "anime" | "film-tv" | "documentary" | "meme-comedy" | "gameplay" | "other";
 type ContentStructure = "auto" | "single-story" | "compilation" | "conversation";
+type DurationPreference = "auto" | "short" | "balanced" | "longer";
 
 type RenderResponse = {
   job_id: string;
@@ -129,10 +133,10 @@ type RenderResponse = {
   duration: number;
   media_url: string;
   download_url: string;
-  kind?: "original" | "short";
+  kind?: "original" | "short" | "preview";
   width?: number | null;
   height?: number | null;
-  framing_mode?: "speaker" | "face" | "motion" | "center" | "portrait" | null;
+  framing_mode?: "speaker" | "face" | "motion" | "saliency" | "center" | "portrait" | null;
   layout_mode?: "fill" | "focus" | "backdrop" | "preserve" | null;
   caption_style?: "viral" | "cinematic" | "clean" | "meme" | null;
   frame_size?: "compact" | "balanced" | "immersive" | null;
@@ -148,6 +152,11 @@ type RenderResponse = {
   platform?: Platform | null;
   cover_url?: string | null;
   auto_profile?: string | null;
+  saliency_samples?: number | null;
+  scene_cut_samples?: number | null;
+  subtitle_samples?: number | null;
+  burned_in_subtitles?: boolean | null;
+  visual_warnings?: string[];
 };
 
 type Mode = "upload" | "youtube";
@@ -164,6 +173,7 @@ function framingLabel(mode?: RenderResponse["framing_mode"]) {
   if (mode === "speaker") return "active-speaker aware";
   if (mode === "face") return "face-aware";
   if (mode === "motion") return "motion-aware";
+  if (mode === "saliency") return "visual-focus aware";
   if (mode === "portrait") return "portrait-preserved";
   return "safe-center";
 }
@@ -172,7 +182,7 @@ function layoutLabel(mode?: RenderResponse["layout_mode"]) {
   if (mode === "fill") return "full vertical fill";
   if (mode === "focus") return "central focus window";
   if (mode === "backdrop") return "focus + blurred backdrop";
-  if (mode === "preserve") return "portrait preserve";
+  if (mode === "preserve") return "full-frame preserve";
   return "adaptive layout";
 }
 
@@ -183,9 +193,9 @@ function frameSizeLabel(size?: RenderResponse["frame_size"]) {
 }
 
 function captionLabel(style?: RenderResponse["caption_style"]) {
-  if (style === "viral") return "Viral Pop";
+  if (style === "viral") return "Viral";
   if (style === "cinematic") return "Cinematic";
-  if (style === "meme") return "Meme";
+  if (style === "meme") return "Viral";
   return "Clean";
 }
 
@@ -284,6 +294,11 @@ export default function Home() {
   const [contentType, setContentType] = useState<ContentType>("auto");
   const [contentStructure, setContentStructure] = useState<ContentStructure>("auto");
   const [subjectHint, setSubjectHint] = useState("");
+  const [durationPreference, setDurationPreference] = useState<DurationPreference>("auto");
+  const [projectNotes, setProjectNotes] = useState("");
+  const [projectNotesSaved, setProjectNotesSaved] = useState(false);
+  const [previews, setPreviews] = useState<Record<number, RenderResponse>>({});
+  const [feedbackReasons, setFeedbackReasons] = useState<Record<number, string>>({});
   const [transcriptText, setTranscriptText] = useState<Record<number, string>>({});
   const [transcriptLoaded, setTranscriptLoaded] = useState<Record<number, boolean>>({});
   const [transcriptBusy, setTranscriptBusy] = useState<number | null>(null);
@@ -355,6 +370,10 @@ export default function Home() {
       if (["auto", "podcast", "anime", "film-tv", "documentary", "meme-comedy", "gameplay", "other"].includes(data.content_type || "")) setContentType((data.content_type || "auto") as ContentType);
       if (["auto", "single-story", "compilation", "conversation"].includes(data.content_structure || "")) setContentStructure((data.content_structure || "auto") as ContentStructure);
       setSubjectHint(data.subject_hint || "");
+      if (["auto", "short", "balanced", "longer"].includes(data.duration_preference || "")) setDurationPreference((data.duration_preference || "auto") as DurationPreference);
+      setProjectNotes(data.project_notes || "");
+      setProjectNotesSaved(false);
+      setPreviews({});
       setReplacedIndices([]);
       setResult({
         source_url: data.source_url || data.title,
@@ -377,6 +396,7 @@ export default function Home() {
     setResult(null);
     setReplacedIndices([]);
     setRendered({});
+    setPreviews({});
     setLayouts({});
     setCaptions({});
     setFrameSizes({});
@@ -394,6 +414,7 @@ export default function Home() {
       form.append("processing_profile", processingProfile);
       form.append("content_type", contentType);
       form.append("content_structure", contentStructure);
+      form.append("duration_preference", durationPreference);
       if (subjectHint.trim()) form.append("subject_hint", subjectHint.trim());
       window.localStorage.setItem("clip-ai-processing-profile", processingProfile);
       const res = await fetch(`${workerUrl}/tasks/analyze-upload`, { method: "POST", body: form });
@@ -445,6 +466,7 @@ export default function Home() {
     setResult(null);
     setReplacedIndices([]);
     setRendered({});
+    setPreviews({});
     setLayouts({});
     setCaptions({});
     setFrameSizes({});
@@ -460,6 +482,7 @@ export default function Home() {
       form.append("processing_profile", processingProfile);
       form.append("content_type", contentType);
       form.append("content_structure", contentStructure);
+      form.append("duration_preference", durationPreference);
       if (subjectHint.trim()) form.append("subject_hint", subjectHint.trim());
       window.localStorage.setItem("clip-ai-processing-profile", processingProfile);
       form.append("title", youtubeInfo.title);
@@ -636,6 +659,50 @@ export default function Home() {
     finally { setCoverBusy(null); }
   }
 
+  async function renderPreview(clip: Clip, index: number) {
+    if (!result?.job_id) return;
+    setError("");
+    setRendering({ index, kind: "short" });
+    try {
+      const body: Record<string, string | number | boolean> = {
+        job_id: result.job_id, start: clip.start, end: clip.end, preview: true,
+        layout_mode: layouts[index] || "auto", caption_style: captions[index] || "auto",
+        frame_size: frameSizes[index] || "auto", caption_offset_ms: captionOffsets[index] || 0,
+        platform: platforms[index] || "auto",
+      };
+      const res = await fetch(`${workerUrl}/tasks/render-preview`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const started: TaskCreate & { detail?: string } = await res.json();
+      if (!res.ok) throw new Error(started.detail || "Preview could not start");
+      setActiveTask({ task_id: started.task_id, kind: "render-preview", status: "queued", stage: "Queued", progress: 0, message: "Building a 9-second preview…", job_id: started.job_id });
+      const data = await waitForTask<RenderResponse>(started.task_id);
+      setPreviews((current) => ({ ...current, [index]: data }));
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not create preview"); }
+    finally { setRendering(null); setActiveTask(null); }
+  }
+
+  async function saveProjectNotes() {
+    if (!result?.job_id) return;
+    setProjectNotesSaved(false); setError("");
+    try {
+      const res = await fetch(`${workerUrl}/projects/${result.job_id}/notes`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ notes: projectNotes }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not save project notes");
+      setProjectNotes(data.notes || ""); setProjectNotesSaved(true);
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not save project notes"); }
+  }
+
+  async function rejectAndReplace(index: number) {
+    if (!result?.job_id) return;
+    const reason = feedbackReasons[index] || "bad-moment";
+    setError("");
+    try {
+      const res = await fetch(`${workerUrl}/projects/${result.job_id}/clips/${index}/feedback`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason, note: "" }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Could not save feedback");
+      setReplacedIndices((current) => current.includes(index) ? current : [...current, index]);
+    } catch (err) { setError(err instanceof Error ? err.message : "Could not replace suggestion"); }
+  }
+
   async function renderMedia(clip: Clip, index: number, kind: RenderKind, quiet = false): Promise<boolean> {
     if (!result?.job_id) {
       setError("This result does not have a real uploaded source attached.");
@@ -729,7 +796,7 @@ export default function Home() {
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
-          <div className="badge">v22 · M3 social metadata</div>
+          <div className="badge">v22 · M5 editing & workflow</div>
         </div>
       </nav>
 
@@ -785,6 +852,15 @@ export default function Home() {
                       <option value="single-story">Single story / episode</option>
                       <option value="compilation">Compilation / mixed clips</option>
                       <option value="conversation">Conversation</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Clip length</span>
+                    <select value={durationPreference} onChange={(e) => setDurationPreference(e.target.value as DurationPreference)} disabled={loading}>
+                      <option value="auto">Auto · natural ending</option>
+                      <option value="short">Short · quicker moments</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="longer">Longer story · more context</option>
                     </select>
                   </label>
                 </div>
@@ -868,6 +944,9 @@ export default function Home() {
                       <label><span>Video structure</span><select value={contentStructure} onChange={(e) => setContentStructure(e.target.value as ContentStructure)} disabled={loading}>
                         <option value="auto">Auto · detect structure</option><option value="single-story">Single story / episode</option><option value="compilation">Compilation / mixed clips</option><option value="conversation">Conversation</option>
                       </select></label>
+                      <label><span>Clip length</span><select value={durationPreference} onChange={(e) => setDurationPreference(e.target.value as DurationPreference)} disabled={loading}>
+                        <option value="auto">Auto · natural ending</option><option value="short">Short · quicker moments</option><option value="balanced">Balanced</option><option value="longer">Longer story · more context</option>
+                      </select></label>
                     </div>
                     <label className="subjectHintField"><span>Show / program / subject <small>optional</small></span><input value={subjectHint} onChange={(e) => setSubjectHint(e.target.value)} maxLength={160} placeholder="e.g. Attack on Titan, Planet Earth III" disabled={loading} /></label>
                   </div>
@@ -929,7 +1008,8 @@ export default function Home() {
                 <span><b>Context</b>{contentTypeLabel(result.clips[0].context?.content_type)}</span>
                 <span><b>Structure</b>{contentStructureLabel(result.clips[0].context?.content_structure)}</span>
                 {result.clips[0].context?.subject_hint && <span><b>Hint</b>{result.clips[0].context?.subject_hint}</span>}
-                <small>M2 chooses scene-local moments and adjusts clip length around natural endings. Subject is a hint, not a fact about every scene.</small>
+                <span><b>Length</b>{durationPreference === "auto" ? "Auto" : durationPreference === "short" ? "Short" : durationPreference === "longer" ? "Longer story" : "Balanced"}</span>
+                <small>M5 keeps natural endings, but the length preference now nudges ranking toward quicker or more complete story clips.</small>
               </div>
             )}
 
@@ -941,20 +1021,16 @@ export default function Home() {
                     <h3>Best 3 moments</h3>
                     <p>Different scenes, natural starts and complete endings matter alongside the hook. You can replace a pick without analyzing again.</p>
                   </div>
-                  <button
-                    className="renderAllButton"
-                    type="button"
-                    onClick={renderBestThree}
-                    disabled={rendering !== null || batchRendering !== null}
-                  >
-                    {batchRendering ? `Rendering ${batchRendering.current}/${batchRendering.total}…` : "Render all 3"}
-                  </button>
+                  <div className="bestRenderModes">
+                    <button className="restorePicksButton" type="button" onClick={() => bestIndices[0] !== undefined && renderMedia(result.clips[bestIndices[0]], bestIndices[0], "short")} disabled={rendering !== null || batchRendering !== null}>Render #1 only</button>
+                    <button className="renderAllButton" type="button" onClick={renderBestThree} disabled={rendering !== null || batchRendering !== null}>{batchRendering ? `Rendering ${batchRendering.current}/${batchRendering.total}…` : "Render all 3"}</button>
+                  </div>
                   {replacedIndices.length > 0 && <button className="restorePicksButton" type="button" onClick={() => setReplacedIndices([])} disabled={batchRendering !== null}>Restore top picks</button>}
                 </div>
                 <div className="bestPicksGrid">
                   {bestIndices.map((index, rank) => {
                     const clip = result.clips[index];
-                    const breakdown = clip.score_breakdown || {};
+                    const breakdown: Record<string, number> = clip.score_breakdown || {};
                     const bestRenderedClip = rendered[index]?.kind === "short" ? rendered[index] : null;
                     const alreadyRendered = Boolean(bestRenderedClip);
                     return (
@@ -984,6 +1060,7 @@ export default function Home() {
                         </details>
                         <div className="bestPickActions">
                           <span>{fmt(clip.start)} → {fmt(clip.end)}</span>
+                          <button type="button" className="previewButton" onClick={() => renderPreview(clip, index)} disabled={rendering !== null || batchRendering !== null}>Quick preview</button>
                           <button
                             type="button"
                             onClick={() => renderMedia(clip, index, "short")}
@@ -991,8 +1068,12 @@ export default function Home() {
                           >
                             {rendering?.index === index && rendering.kind === "short" ? "Creating…" : alreadyRendered ? "Render again" : "Create Short"}
                           </button>
-                          {availableIndices.length > 3 && <button className="replaceButton" type="button" onClick={() => setReplacedIndices(current => [...current, index])} disabled={rendering !== null || batchRendering !== null}>Replace suggestion</button>}
+                          {availableIndices.length > 3 && <>
+                            <select className="feedbackSelect" value={feedbackReasons[index] || "bad-moment"} onChange={(e) => setFeedbackReasons((current) => ({ ...current, [index]: e.target.value }))}><option value="bad-moment">Bad moment</option><option value="too-short">Too short</option><option value="bad-ending">Bad ending</option><option value="wrong-crop">Wrong crop</option><option value="duplicate">Duplicate</option><option value="other">Other</option></select>
+                            <button className="replaceButton" type="button" onClick={() => rejectAndReplace(index)} disabled={rendering !== null || batchRendering !== null}>Not good · replace</button>
+                          </>}
                         </div>
+                        {previews[index] && <div className="bestRendered previewRendered"><video controls preload="metadata" src={`${workerUrl}${previews[index].media_url}`} /><div><span>9-second preview</span><small>Check framing and caption position before the full render.</small></div></div>}
                         {bestRenderedClip && (
                           <div className="bestRendered">
                             <video controls preload="metadata" src={`${workerUrl}${bestRenderedClip.media_url}`} />
@@ -1015,6 +1096,7 @@ export default function Home() {
                 <span className="guideChevron">⌄</span>
               </summary>
               <div className="allDetailsBody">
+            {!result.mock && result.job_id && <div className="projectNotesPanel"><div><strong>Project notes</strong><small>Private local notes for this project.</small></div><textarea rows={2} value={projectNotes} onChange={(e) => { setProjectNotes(e.target.value); setProjectNotesSaved(false); }} placeholder="e.g. Anime account · episode 8 · keep clean captions" /><button type="button" className="copyButton" onClick={saveProjectNotes}>{projectNotesSaved ? "Saved" : "Save notes"}</button></div>}
             <details className="formatGuide">
               <summary>
                 <span>
@@ -1046,10 +1128,10 @@ export default function Home() {
                   </div>
                   <div className="guideGroup">
                     <h4>Caption style</h4>
-                    <p><b>Viral Pop</b> — energetic word highlighting for podcasts and social clips.</p>
+                    <p><b>Viral</b> — energetic word highlighting for podcasts, comedy, gameplay and punchy social clips.</p>
                     <p><b>Cinematic</b> — quieter subtitles on the lower part of the actual picture.</p>
                     <p><b>Clean</b> — simple and readable with little distraction.</p>
-                    <p><b>Meme</b> — bold, playful text for reactions, gameplay and humorous clips.</p>
+                    <p><b>Anime Auto</b> — uses familiar central framing with restrained Cinematic text and calmer tracking.</p>
                   </div>
                 </div>
                 <div className="guideTip"><b>Not sure?</b> Leave everything on Auto and press Create Short. You can always regenerate with different settings.</div>
@@ -1200,6 +1282,7 @@ export default function Home() {
                     {!result.mock && result.job_id && (
                       <>
                         <div className="renderActions simpleActions">
+                          <button className="renderButton previewAction" type="button" onClick={() => renderPreview(clip, index)} disabled={rendering !== null || batchRendering !== null}>Quick preview</button>
                           <button
                             className="renderButton shortButton"
                             onClick={() => renderMedia(clip, index, "short")}
@@ -1247,7 +1330,7 @@ export default function Home() {
                                   <option value="fill">Fill · full vertical crop</option>
                                   <option value="focus">Focus · central window</option>
                                   <option value="backdrop">Backdrop · central + blur</option>
-                                  <option value="preserve">Preserve · already vertical</option>
+                                  <option value="preserve">Preserve · show full picture</option>
                                 </select>
                               </label>
                               <label>
@@ -1271,10 +1354,9 @@ export default function Home() {
                                   disabled={rendering !== null || batchRendering !== null}
                                 >
                                   <option value="auto">Auto · recommended</option>
-                                  <option value="viral">Viral Pop</option>
+                                  <option value="viral">Viral</option>
                                   <option value="cinematic">Cinematic</option>
                                   <option value="clean">Clean</option>
-                                  <option value="meme">Meme</option>
                                 </select>
                               </label>
                             </div>
@@ -1312,6 +1394,7 @@ export default function Home() {
                                   disabled={rendering !== null || batchRendering !== null}
                                   onChange={(e) => setCaptionOffsets((current) => ({ ...current, [index]: Number(e.target.value) }))}
                                 />
+                                <div className="syncNudges"><button type="button" onClick={() => setCaptionOffsets((current) => ({ ...current, [index]: Math.max(-1000, selectedOffset - 100) }))}>−100 ms</button><button type="button" onClick={() => setCaptionOffsets((current) => ({ ...current, [index]: 0 }))}>Reset</button><button type="button" onClick={() => setCaptionOffsets((current) => ({ ...current, [index]: Math.min(1000, selectedOffset + 100) }))}>+100 ms</button></div>
                                 <div className="syncLegend"><span>Earlier</span><span>Whisper timing</span><span>Later</span></div>
                               </div>
                             </details>
@@ -1330,6 +1413,13 @@ export default function Home() {
                         />
                         {isVertical ? (
                           <section className="readyPost">
+                            {!!renderedClip.visual_warnings?.length && (
+                              <div className="visualWarnings">
+                                {renderedClip.visual_warnings.map((warning, warningIndex) => (
+                                  <span key={`${index}-visual-warning-${warningIndex}`}>✦ {warning}</span>
+                                ))}
+                              </div>
+                            )}
                             <div className="readyPostHead">
                               <div>
                                 <span className="readyKicker">Ready to post</span>
@@ -1421,7 +1511,7 @@ export default function Home() {
                             <details className="exportDetails">
                               <summary>Technical details</summary>
                               <p>
-                                {Math.round(renderedClip.duration)} sec · {renderedClip.auto_profile ? `${renderedClip.auto_profile} · ` : ""}{platformLabel(renderedClip.platform)} · {layoutLabel(renderedClip.layout_mode)} · {frameSizeLabel(renderedClip.frame_size)} · {captionLabel(renderedClip.caption_style)} · {renderedClip.word_timed_captions ? "word-synced" : "legacy timing"} · {captionZoneLabel(renderedClip.caption_zone)} · {framingLabel(renderedClip.framing_mode)}{renderedClip.active_speaker_switches ? ` · ${renderedClip.active_speaker_switches} speaker switch${renderedClip.active_speaker_switches === 1 ? "" : "es"}` : ""}
+                                {Math.round(renderedClip.duration)} sec · {renderedClip.auto_profile ? `${renderedClip.auto_profile} · ` : ""}{platformLabel(renderedClip.platform)} · {layoutLabel(renderedClip.layout_mode)} · {frameSizeLabel(renderedClip.frame_size)} · {captionLabel(renderedClip.caption_style)} · {renderedClip.word_timed_captions ? "word-synced" : "legacy timing"} · {captionZoneLabel(renderedClip.caption_zone)} · {framingLabel(renderedClip.framing_mode)}{renderedClip.active_speaker_switches ? ` · ${renderedClip.active_speaker_switches} speaker switch${renderedClip.active_speaker_switches === 1 ? "" : "es"}` : ""}{renderedClip.scene_cut_samples ? ` · ${renderedClip.scene_cut_samples} shot reset${renderedClip.scene_cut_samples === 1 ? "" : "s"}` : ""}{renderedClip.burned_in_subtitles ? " · existing subtitles avoided" : ""}
                               </p>
                             </details>
                           </section>
@@ -1439,7 +1529,7 @@ export default function Home() {
             </div>
               </div>
             </details>
-            <div className="footNote">v22 M2 adds scene-local suggestions, flexible duration and ending checks. Original render and manual editing controls remain available.</div>
+            <div className="footNote">v22 M5 adds quick previews, length preferences, saved notes and feedback while keeping Anime Cinematic captions locked low inside the picture.</div>
           </section>
         )}
       </main>
@@ -1450,7 +1540,7 @@ export default function Home() {
             <div className="onboardingTop">
               <span className="onboardingMark">✦</span>
               <div>
-                <span className="onboardingKicker">Clip AI v22 · Smarter Clip Intelligence</span>
+                <span className="onboardingKicker">Clip AI v22 · Visual & Caption Intelligence</span>
                 <h2 id="welcome-title">You do not need to learn the editor first.</h2>
               </div>
             </div>
@@ -1458,7 +1548,7 @@ export default function Home() {
             <div className="onboardingSteps">
               <div><b>1</b><span><strong>Add a video</strong><small>Upload your own file or create an authorised YouTube project.</small></span></div>
               <div><b>2</b><span><strong>Pick a Best 3 moment</strong><small>Clip AI scores the hook, context, payoff, retention and clarity.</small></span></div>
-              <div><b>3</b><span><strong>Create Short</strong><small>Auto handles framing, speaker tracking and captions. Your projects stay saved locally.</small></span></div>
+              <div><b>3</b><span><strong>Create Short</strong><small>Auto adapts framing and captions to the content type. Anime keeps the familiar framing with cleaner Cinematic text and calmer tracking.</small></span></div>
             </div>
             <div className="onboardingSystem">
               <span className={preflight?.ready ? "okDot" : "waitDot"} />

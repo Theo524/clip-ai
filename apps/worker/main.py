@@ -16,13 +16,13 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from models import AnalyzeRequest, AnalyzeResponse, CleanupResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ClipTimingUpdateRequest, CoverRequest, ProjectDetail, ProjectSummary, RenderClipRequest, RenderClipResponse, SystemCheck, SystemPreflightResponse, TaskCreateResponse, TaskStatusResponse, TranscriptEditRequest, TranscriptRangeResponse, TranscriptSegment, YouTubeInfoResponse
+from models import AnalyzeRequest, AnalyzeResponse, CleanupResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ClipFeedbackRequest, ClipTimingUpdateRequest, CoverRequest, ProjectDetail, ProjectNotesUpdateRequest, ProjectSummary, RenderClipRequest, RenderClipResponse, SystemCheck, SystemPreflightResponse, TaskCreateResponse, TaskStatusResponse, TranscriptEditRequest, TranscriptRangeResponse, TranscriptSegment, YouTubeInfoResponse
 from settings import settings
 from services.media import cut_clip, extract_audio_chunks, extract_cover_frame, normalize_media, probe_media, probe_media_audio, render_adaptive_short, should_normalize_media
 from services.captions import write_clip_ass
 from services.mock import mock_clips
 from services.reframe import ReframePlan, load_reframe_plan, plan_smart_reframe, save_reframe_plan
-from services.layouts import auto_profile, choose_caption_style, choose_caption_zone, choose_frame_size, choose_layout
+from services.layouts import auto_profile, burned_subtitles_likely, choose_caption_style, choose_caption_zone, choose_frame_size, choose_layout
 from services.projects import cleanup_stale_work, directory_size, load_project, rendered_media, save_project
 from services.copywriter import dialogue_for_range, generate_clip_copy_local
 from services.tasks import tasks
@@ -33,8 +33,8 @@ from services.transcript_cache import load_cached_transcript, save_cached_transc
 from services.context import candidate_context, normalize_content_structure, normalize_content_type, normalize_subject_hint, resolve_content_context
 from services.smart_rank import RANKING_VERSION, detect_shot_boundaries, rank_clip_candidates_m2
 
-APP_VERSION = "22.0.0-m3"
-RELEASE_NAME = "Titles & Social Metadata"
+APP_VERSION = "22.0.0-m5"
+RELEASE_NAME = "Editing & Workflow"
 
 app = FastAPI(title="Clip AI Worker", version=APP_VERSION)
 app.add_middleware(
@@ -263,7 +263,7 @@ def _eta_text(seconds: float) -> str:
     return f"about {hours} hr {remainder} min remaining" if remainder else f"about {hours} hr remaining"
 
 
-def _rank_segments(segments, max_clips: int, *, context=None, media_path=None):
+def _rank_segments(segments, max_clips: int, *, context=None, media_path=None, duration_preference: str = "auto"):
     backend = settings.ranking_backend.lower().strip()
 
     if backend == "local":
@@ -273,7 +273,7 @@ def _rank_segments(segments, max_clips: int, *, context=None, media_path=None):
         shots = []
         if media_path and (context.resolved_type in {"anime", "film-tv"} or context.resolved_structure == "compilation"):
             shots = detect_shot_boundaries(media_path)
-        return rank_clip_candidates_m2(segments, max_clips=max_clips, context=context, shot_boundaries=shots)
+        return rank_clip_candidates_m2(segments, max_clips=max_clips, context=context, shot_boundaries=shots, duration_preference=duration_preference)
 
     if backend == "openai":
         if not settings.openai_api_key:
@@ -303,6 +303,7 @@ def analyze_local_media(
     content_type: str = "auto",
     content_structure: str = "auto",
     subject_hint: str | None = None,
+    duration_preference: str = "auto",
     progress=None,
     cancel_event=None,
 ) -> AnalyzeResponse:
@@ -314,6 +315,9 @@ def analyze_local_media(
     requested_content_type = normalize_content_type(content_type)
     requested_content_structure = normalize_content_structure(content_structure)
     clean_subject_hint = normalize_subject_hint(subject_hint)
+    duration_preference = (duration_preference or "auto").lower().strip()
+    if duration_preference not in {"auto", "short", "balanced", "longer"}:
+        duration_preference = "auto"
 
     def notify(value: int, stage: str, message: str) -> None:
         if progress is not None:
@@ -366,6 +370,7 @@ def analyze_local_media(
             "content_type": requested_content_type,
             "content_structure": requested_content_structure,
             "subject_hint": clean_subject_hint,
+            "duration_preference": duration_preference,
             "media_preflight": detailed_info,
             "normalized": normalize_needed,
         })
@@ -478,6 +483,7 @@ def analyze_local_media(
             "content_structure": context.requested_structure,
             "resolved_content_structure": context.resolved_structure,
             "subject_hint": context.subject_hint,
+            "duration_preference": duration_preference,
             "context_confidence": context.confidence,
             "context_signals": list(context.signals),
         })
@@ -485,13 +491,18 @@ def analyze_local_media(
         check_cancel()
         existing_project = load_project(job_dir) or {}
         existing_clips = existing_project.get("clips") or []
-        if existing_clips and len(existing_clips) >= min(max_clips, len(existing_clips)):
+        can_reuse_rank = (
+            bool(existing_clips)
+            and str(existing_project.get("duration_preference") or "auto") == duration_preference
+            and str(existing_project.get("ranking_version") or "") == RANKING_VERSION
+        )
+        if can_reuse_rank and len(existing_clips) >= min(max_clips, len(existing_clips)):
             notify(78, "Using ranked moments", "Reusing the saved clip-ranking checkpoint…")
             clips = [ClipCandidate.model_validate(item) for item in existing_clips[:max_clips]]
         else:
             notify(74, "Finding moments", "Ranking the strongest standalone moments…")
             if settings.ranking_backend.lower().strip() == "local":
-                clips = _rank_segments(segments, max_clips=max_clips, context=context, media_path=working_media)
+                clips = _rank_segments(segments, max_clips=max_clips, context=context, media_path=working_media, duration_preference=duration_preference)
             else:
                 clips = _rank_segments(segments, max_clips=max_clips)
 
@@ -502,13 +513,14 @@ def analyze_local_media(
         save_project(job_dir, {
             "status": "ranked",
             "clips": [clip.model_dump() for clip in clips],
-            "ranking_version": RANKING_VERSION if settings.ranking_backend.lower().strip() == "local" and not existing_clips else existing_project.get("ranking_version", "m1"),
+            "ranking_version": RANKING_VERSION if settings.ranking_backend.lower().strip() == "local" else existing_project.get("ranking_version", "openai"),
             "processing_profile": profile.name,
             "content_type": context.requested_type,
             "resolved_content_type": context.resolved_type,
             "content_structure": context.requested_structure,
             "resolved_content_structure": context.resolved_structure,
             "subject_hint": context.subject_hint,
+            "duration_preference": duration_preference,
             "context_confidence": context.confidence,
             "context_signals": list(context.signals),
         })
@@ -556,6 +568,7 @@ def analyze_local_media(
                 "content_structure": context.requested_structure,
                 "resolved_content_structure": context.resolved_structure,
                 "subject_hint": context.subject_hint,
+                "duration_preference": duration_preference,
                 "context_confidence": context.confidence,
                 "context_signals": list(context.signals),
             },
@@ -750,6 +763,7 @@ async def analyze_youtube_owned(
     content_type: str = Form(default="auto"),
     content_structure: str = Form(default="auto"),
     subject_hint: str | None = Form(default=None),
+    duration_preference: str = Form(default="auto"),
 ):
     if not is_youtube_url(source_url):
         raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
@@ -794,6 +808,7 @@ async def analyze_youtube_owned(
         content_type=content_type,
         content_structure=content_structure,
         subject_hint=subject_hint,
+        duration_preference=duration_preference,
     )
 
 
@@ -817,7 +832,7 @@ def analyze(request: AnalyzeRequest):
             detail="Direct YouTube ingestion is not connected yet. Upload an authorised video file for real analysis.",
         )
 
-    return analyze_local_media(request.local_media_path, source_url, request.max_clips, processing_profile=request.processing_profile, content_type=request.content_type, content_structure=request.content_structure, subject_hint=request.subject_hint)
+    return analyze_local_media(request.local_media_path, source_url, request.max_clips, processing_profile=request.processing_profile, content_type=request.content_type, content_structure=request.content_structure, subject_hint=request.subject_hint, duration_preference=request.duration_preference)
 
 
 @app.post("/tasks/analyze-upload", response_model=TaskCreateResponse, status_code=202)
@@ -828,6 +843,7 @@ async def start_analyze_upload_task(
     content_type: str = Form(default="auto"),
     content_structure: str = Form(default="auto"),
     subject_hint: str | None = Form(default=None),
+    duration_preference: str = Form(default="auto"),
 ):
     if max_clips < 1 or max_clips > 12:
         raise HTTPException(status_code=422, detail="max_clips must be between 1 and 12.")
@@ -855,6 +871,7 @@ async def start_analyze_upload_task(
         "clips": [], "status": "queued", "processing_profile": profile_name,
         "content_type": normalize_content_type(content_type),
         "content_structure": normalize_content_structure(content_structure),
+        "duration_preference": duration_preference,
         "subject_hint": normalize_subject_hint(subject_hint),
     })
 
@@ -862,12 +879,12 @@ async def start_analyze_upload_task(
         return analyze_local_media(
             str(saved_path), filename, max_clips,
             job_id=job_id, project_title=filename, source_type="upload", processing_profile=profile_name,
-            content_type=content_type, content_structure=content_structure, subject_hint=subject_hint,
+            content_type=content_type, content_structure=content_structure, subject_hint=subject_hint, duration_preference=duration_preference,
             progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
             cancel_event=cancel_event,
         )
 
-    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips, "content_type": normalize_content_type(content_type), "content_structure": normalize_content_structure(content_structure), "subject_hint": normalize_subject_hint(subject_hint)})
+    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips, "content_type": normalize_content_type(content_type), "content_structure": normalize_content_structure(content_structure), "subject_hint": normalize_subject_hint(subject_hint), "duration_preference": duration_preference})
     return TaskCreateResponse(task_id=record["task_id"], job_id=job_id, status=record["status"])
 
 
@@ -884,6 +901,7 @@ async def start_analyze_youtube_task(
     content_type: str = Form(default="auto"),
     content_structure: str = Form(default="auto"),
     subject_hint: str | None = Form(default=None),
+    duration_preference: str = Form(default="auto"),
 ):
     if not is_youtube_url(source_url):
         raise HTTPException(status_code=400, detail="Enter a valid YouTube URL.")
@@ -920,6 +938,7 @@ async def start_analyze_youtube_task(
         "processing_profile": profile_name,
         "content_type": normalize_content_type(content_type),
         "content_structure": normalize_content_structure(content_structure),
+        "duration_preference": duration_preference,
         "subject_hint": normalize_subject_hint(subject_hint),
     })
 
@@ -928,12 +947,12 @@ async def start_analyze_youtube_task(
             str(saved_path), source_url, max_clips,
             job_id=job_id, project_title=title or filename, source_type="youtube",
             author_name=author_name, thumbnail_url=thumbnail_url, processing_profile=profile_name,
-            content_type=content_type, content_structure=content_structure, subject_hint=subject_hint,
+            content_type=content_type, content_structure=content_structure, subject_hint=subject_hint, duration_preference=duration_preference,
             progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
             cancel_event=cancel_event,
         )
 
-    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips, "content_type": normalize_content_type(content_type), "content_structure": normalize_content_structure(content_structure), "subject_hint": normalize_subject_hint(subject_hint)})
+    record = tasks.create("analysis", runner, job_id=job_id, spec={"profile": profile_name, "max_clips": max_clips, "content_type": normalize_content_type(content_type), "content_structure": normalize_content_structure(content_structure), "subject_hint": normalize_subject_hint(subject_hint), "duration_preference": duration_preference})
     return TaskCreateResponse(task_id=record["task_id"], job_id=job_id, status=record["status"])
 
 
@@ -945,6 +964,7 @@ async def analyze_upload(
     content_type: str = Form(default="auto"),
     content_structure: str = Form(default="auto"),
     subject_hint: str | None = Form(default=None),
+    duration_preference: str = Form(default="auto"),
 ):
     if max_clips < 1 or max_clips > 12:
         raise HTTPException(status_code=422, detail="max_clips must be between 1 and 12.")
@@ -1012,6 +1032,8 @@ def _project_summary(job_dir: Path, data: dict) -> ProjectSummary:
         content_structure=str(data.get("content_structure") or "auto"),
         resolved_content_structure=str(data.get("resolved_content_structure") or "single-story"),
         subject_hint=data.get("subject_hint"),
+        duration_preference=str(data.get("duration_preference") or "auto"),
+        project_notes=str(data.get("project_notes") or ""),
         context_confidence=float(data.get("context_confidence") or 0.0),
     )
 
@@ -1072,6 +1094,7 @@ def resume_project(job_id: str):
             content_type=str(data.get("content_type") or "auto"),
             content_structure=str(data.get("content_structure") or "auto"),
             subject_hint=data.get("subject_hint"),
+            duration_preference=str(data.get("duration_preference") or "auto"),
             progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
             cancel_event=cancel_event,
         )
@@ -1317,6 +1340,34 @@ def update_clip_copy(job_id: str, clip_index: int, request: ClipCopyUpdateReques
     )
 
 
+@app.patch("/projects/{job_id}/notes")
+def update_project_notes(job_id: str, request: ProjectNotesUpdateRequest):
+    job_dir = _job_dir(job_id)
+    project = load_project(job_dir)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Saved project not found.")
+    saved = save_project(job_dir, {"project_notes": request.notes.strip()})
+    return {"job_id": job_id, "notes": saved.get("project_notes") or ""}
+
+
+@app.patch("/projects/{job_id}/clips/{clip_index}/feedback")
+def update_clip_feedback(job_id: str, clip_index: int, request: ClipFeedbackRequest):
+    job_dir = _job_dir(job_id)
+    project = load_project(job_dir)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Saved project not found.")
+    clips = list(project.get("clips") or [])
+    if clip_index < 0 or clip_index >= len(clips):
+        raise HTTPException(status_code=404, detail="Clip suggestion not found.")
+    clip = dict(clips[clip_index])
+    context = dict(clip.get("context") or {})
+    context["user_feedback"] = {"reason": request.reason, "note": request.note.strip()}
+    clip["context"] = context
+    clips[clip_index] = clip
+    save_project(job_dir, {"clips": clips})
+    return {"ok": True, "clip_index": clip_index, "feedback": context["user_feedback"]}
+
+
 @app.delete("/projects/{job_id}")
 def delete_project(job_id: str):
     job_dir = _job_dir(job_id)
@@ -1419,6 +1470,9 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
 
     source = _find_source(request.job_id)
     transcript = _load_transcript(request.job_id)
+    render_start = request.start
+    render_end = min(request.end, request.start + 9.0) if request.preview else request.end
+    render_width, render_height = (540, 960) if request.preview else (720, 1280)
     job_dir = _job_dir(request.job_id)
     project_for_render = load_project(job_dir) or {}
     try:
@@ -1428,9 +1482,16 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
     clips_dir = job_dir / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
 
-    start_ms = round(request.start * 1000)
-    end_ms = round(request.end * 1000)
-    plan_filename = f"reframe_v19_1_{start_ms}_{end_ms}.json"
+    resolved_content_type = str(
+        project_for_render.get("resolved_content_type")
+        or project_for_render.get("content_type")
+        or "auto"
+    ).lower().strip()
+    start_ms = round(render_start * 1000)
+    end_ms = round(render_end * 1000)
+    content_tag = re.sub(r"[^a-z0-9]+", "-", resolved_content_type).strip("-") or "auto"
+    plan_prefix = "reframe_v22_m5_preview" if request.preview else "reframe_v22_m5"
+    plan_filename = f"{plan_prefix}_{content_tag}_{start_ms}_{end_ms}.json"
     plan_path = clips_dir / plan_filename
 
     try:
@@ -1439,53 +1500,69 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
             notify(22, "Loading framing", "Reusing the saved speaker-tracking plan…")
             reframe_plan = load_reframe_plan(plan_path)
         else:
-            notify(8, "Scanning the scene", "Finding faces, motion and likely active speakers…")
+            notify(8, "Scanning the scene", "Finding cuts, visual focus, faces and existing subtitles…")
             speech_intervals = [
                 (segment.start, segment.end)
                 for segment in transcript
-                if segment.end >= request.start and segment.start <= request.end
+                if segment.end >= render_start and segment.start <= render_end
             ]
             reframe_plan = plan_smart_reframe(
                 str(source),
-                request.start,
-                request.end,
-                target_width=720,
-                target_height=1280,
+                render_start,
+                render_end,
+                target_width=render_width,
+                target_height=render_height,
                 speech_intervals=speech_intervals,
+                content_type=resolved_content_type,
             )
             save_reframe_plan(reframe_plan, plan_path)
         check_cancel()
         notify(34, "Choosing layout", "Resolving Auto framing, video size and caption style…")
 
-        layout_mode = choose_layout(request.layout_mode, reframe_plan)
-        caption_style = choose_caption_style(request.caption_style, layout_mode, reframe_plan)
-        frame_size = choose_frame_size(request.frame_size, layout_mode, reframe_plan)
-        caption_zone = choose_caption_zone(caption_style, layout_mode, reframe_plan)
-        resolved_profile = auto_profile(layout_mode, caption_style, reframe_plan)
+        layout_mode = choose_layout(request.layout_mode, reframe_plan, resolved_content_type)
+        caption_style = choose_caption_style(request.caption_style, layout_mode, reframe_plan, resolved_content_type)
+        frame_size = choose_frame_size(request.frame_size, layout_mode, reframe_plan, resolved_content_type)
+        caption_zone = choose_caption_zone(caption_style, layout_mode, reframe_plan, resolved_content_type)
+        resolved_profile = auto_profile(layout_mode, caption_style, reframe_plan, resolved_content_type)
+        burned_in_subtitles = burned_subtitles_likely(reframe_plan)
+        visual_warnings: list[str] = []
+        if burned_in_subtitles:
+            if resolved_content_type == "anime" and layout_mode == "focus" and caption_style == "cinematic":
+                visual_warnings.append("Existing lower subtitles detected; Anime Cinematic keeps captions low, so review the preview for overlap.")
+            else:
+                visual_warnings.append("Existing lower subtitles detected; Clip AI moved its captions to a safer zone.")
+        if reframe_plan.scene_cut_samples >= max(2, int(max(1, reframe_plan.sample_count) * 0.12)):
+            visual_warnings.append("Frequent shot changes detected; framing resets at cuts instead of chasing the previous subject.")
+        if resolved_content_type == "anime" and layout_mode == "preserve":
+            visual_warnings.append("Anime composition preserved: more of the original frame stays visible.")
 
         offset_tag = f"p{request.caption_offset_ms}" if request.caption_offset_ms >= 0 else f"m{abs(request.caption_offset_ms)}"
         # Caption edits increment transcript_revision. Including it in the cache key ensures
         # an edited transcript never reuses a Short rendered with stale caption text.
         revision_tag = f"tr{transcript_revision}"
-        filename = f"short_v21_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{revision_tag}_{start_ms}_{end_ms}.mp4"
-        subtitle_filename = f"captions_v21_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{revision_tag}_{start_ms}_{end_ms}.ass"
+        prefix = "preview_v22m5" if request.preview else "short_v22m5"
+        filename = f"{prefix}_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{revision_tag}_{start_ms}_{end_ms}.mp4"
+        subtitle_filename = f"captions_{prefix}_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{caption_zone}_{offset_tag}_{revision_tag}_{start_ms}_{end_ms}.ass"
         output = clips_dir / filename
         subtitles = clips_dir / subtitle_filename
 
         notify(43, "Building captions", "Creating word-timed captions inside the video safe-zone…")
         _subtitle_path, word_timed = write_clip_ass(
             transcript,
-            request.start,
-            request.end,
+            render_start,
+            render_end,
             str(subtitles),
             caption_style=caption_style,
             layout_mode=layout_mode,
             frame_size=frame_size,
-            width=720,
-            height=1280,
+            width=render_width,
+            height=render_height,
             caption_offset_ms=request.caption_offset_ms,
             caption_zone=caption_zone,
             platform=request.platform,
+            content_type=resolved_content_type,
+            source_width=reframe_plan.source_width,
+            source_height=reframe_plan.source_height,
         )
         check_cancel()
 
@@ -1495,9 +1572,9 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
             notify(55, "Rendering Short", "Encoding the vertical video. This is usually the longest step…")
             try:
                 render_adaptive_short(
-                    str(source), str(output), str(subtitles), request.start, request.end,
+                    str(source), str(output), str(subtitles), render_start, render_end,
                     reframe_plan=reframe_plan, layout_mode=layout_mode, frame_size=frame_size,
-                    width=720, height=1280, cancel_event=cancel_event,
+                    width=render_width, height=render_height, cancel_event=cancel_event,
                 )
             except CancelledError:
                 raise
@@ -1508,7 +1585,7 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
                     raise
                 check_cancel()
                 notify(67, "Retrying safely", "The smart crop hit an encoding problem. Retrying with stable center framing…")
-                duration = max(0.05, request.end - request.start)
+                duration = max(0.05, render_end - render_start)
                 safe_plan = ReframePlan(
                     mode="center",
                     keyframes=[(0.0, 0.5), (duration, 0.5)],
@@ -1516,23 +1593,20 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
                     source_height=reframe_plan.source_height,
                 )
                 render_adaptive_short(
-                    str(source), str(output), str(subtitles), request.start, request.end,
+                    str(source), str(output), str(subtitles), render_start, render_end,
                     reframe_plan=safe_plan, layout_mode=layout_mode, frame_size=frame_size,
-                    width=720, height=1280, cancel_event=cancel_event,
+                    width=render_width, height=render_height, cancel_event=cancel_event,
                 )
                 reframe_plan = safe_plan
 
         check_cancel()
-        cover_filename = f"cover_v21_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{revision_tag}_{start_ms}_{end_ms}.jpg"
+        cover_filename = f"cover_v22m5_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{revision_tag}_{start_ms}_{end_ms}.jpg"
         cover_path = clips_dir / cover_filename
-        if not cover_path.exists() or cover_path.stat().st_size == 0:
+        if not request.preview and (not cover_path.exists() or cover_path.stat().st_size == 0):
             notify(92, "Creating cover", "Extracting a suggested cover frame…")
-            cover_at = request.cover_offset_seconds if request.cover_offset_seconds is not None else max(0.15, (request.end - request.start) * 0.34)
-            extract_cover_frame(
-                str(output), str(cover_path), cover_at,
-                cancel_event=cancel_event,
-            )
-        notify(97, "Saving render", "Adding the finished Short to this project…")
+            cover_at = request.cover_offset_seconds if request.cover_offset_seconds is not None else max(0.15, (render_end - render_start) * 0.34)
+            extract_cover_frame(str(output), str(cover_path), cover_at, cancel_event=cancel_event)
+        notify(97, "Saving render" if not request.preview else "Preview ready", "Adding the finished Short to this project…" if not request.preview else "The quick preview is ready to check.")
     except CancelledError:
         raise
     except HTTPException:
@@ -1541,7 +1615,7 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
         raise HTTPException(status_code=500, detail=f"Short render failed: {exc}") from exc
 
     project = load_project(job_dir)
-    if project is not None:
+    if project is not None and not request.preview:
         save_project(job_dir, project)
         # Generic metadata sidecar: useful to any downstream publishing/archive tool.
         clip_match = next((item for item in (project.get("clips") or []) if abs(float(item.get("start", -1)) - request.start) < 0.05 and abs(float(item.get("end", -1)) - request.end) < 0.05), None)
@@ -1553,6 +1627,10 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
             "hashtags": (clip_match or {}).get("hashtags") or [],
             "social_caption": (clip_match or {}).get("social_caption") or "",
             "start": request.start, "end": request.end, "transcript_revision": transcript_revision,
+            "content_type": resolved_content_type, "layout_mode": layout_mode,
+            "caption_style": caption_style, "caption_zone": caption_zone,
+            "burned_in_subtitles": burned_in_subtitles,
+            "visual_warnings": visual_warnings,
         }
         try:
             (clips_dir / f"{Path(filename).stem}.metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1563,14 +1641,14 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
     return RenderClipResponse(
         job_id=request.job_id,
         filename=filename,
-        start=round(request.start, 3),
-        end=round(request.end, 3),
-        duration=round(request.end - request.start, 3),
+        start=round(render_start, 3),
+        end=round(render_end, 3),
+        duration=round(render_end - render_start, 3),
         media_url=media_url,
         download_url=f"{media_url}?download=true",
-        kind="short",
-        width=720,
-        height=1280,
+        kind="preview" if request.preview else "short",
+        width=render_width,
+        height=render_height,
         framing_mode=reframe_plan.mode,
         layout_mode=layout_mode,
         caption_style=caption_style,
@@ -1585,8 +1663,13 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
         word_timed_captions=word_timed,
         caption_zone=caption_zone,
         platform=request.platform,
-        cover_url=f"/media/{request.job_id}/{cover_filename}",
+        cover_url=None if request.preview else f"/media/{request.job_id}/{cover_filename}",
         auto_profile=resolved_profile,
+        saliency_samples=reframe_plan.saliency_samples,
+        scene_cut_samples=reframe_plan.scene_cut_samples,
+        subtitle_samples=reframe_plan.subtitle_samples,
+        burned_in_subtitles=burned_in_subtitles,
+        visual_warnings=visual_warnings,
     )
 
 
@@ -1600,6 +1683,19 @@ def start_render_short_task(request: RenderClipRequest):
         )
 
     record = tasks.create("render", runner, job_id=request.job_id)
+    return TaskCreateResponse(task_id=record["task_id"], job_id=request.job_id, status=record["status"])
+
+
+@app.post("/tasks/render-preview", response_model=TaskCreateResponse, status_code=202)
+def start_render_preview_task(request: RenderClipRequest):
+    preview_request = request.model_copy(update={"preview": True})
+    def runner(task_id, cancel_event):
+        return _render_short_core(
+            preview_request,
+            progress=lambda pct, stage, message: tasks.progress(task_id, pct, stage, message),
+            cancel_event=cancel_event,
+        )
+    record = tasks.create("render-preview", runner, job_id=request.job_id)
     return TaskCreateResponse(task_id=record["task_id"], job_id=request.job_id, status=record["status"])
 
 

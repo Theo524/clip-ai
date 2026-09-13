@@ -7,7 +7,7 @@ import os
 import shutil
 import uuid
 
-PROJECT_SCHEMA_VERSION = 22
+PROJECT_SCHEMA_VERSION = 23
 
 
 def utc_now_iso() -> str:
@@ -33,6 +33,8 @@ def migrate_project(data: dict, job_id: str | None = None) -> dict:
     migrated.setdefault("content_structure", "auto")
     migrated.setdefault("resolved_content_structure", "single-story")
     migrated.setdefault("subject_hint", None)
+    migrated.setdefault("duration_preference", "auto")
+    migrated.setdefault("project_notes", "")
     migrated.setdefault("context_confidence", 0.0)
     migrated.setdefault("context_signals", [])
     migrated.setdefault("clips", [])
@@ -92,6 +94,8 @@ def rendered_media(job_dir: Path, job_id: str) -> list[dict]:
 
     items: list[dict] = []
     for path in sorted(clips_dir.glob("*.mp4"), key=lambda p: p.stat().st_mtime, reverse=True):
+        if path.name.startswith("preview_"):
+            continue
         try:
             stat = path.stat()
         except OSError:

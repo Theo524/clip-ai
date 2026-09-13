@@ -98,7 +98,7 @@ export default function ProjectsPage() {
           <a className="navLink activeNav" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v22 · M3 social metadata</div>
+          <div className="badge">v22 · M5 editing & workflow</div>
         </div>
       </nav>
 
