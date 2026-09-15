@@ -115,5 +115,5 @@ def test_frontend_release_labels_match_v23_candidate():
     from pathlib import Path
     page = Path(__file__).resolve().parents[2] / "web" / "app" / "page.tsx"
     text = page.read_text(encoding="utf-8")
-    assert "v23 · stable candidate" in text
-    assert "Clip AI v23 · Stable Candidate" in text
+    assert "v23 · M5 final quality" in text
+    assert "Clip AI v23 · Final Quality Pass" in text

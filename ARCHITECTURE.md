@@ -1,112 +1,78 @@
-# Clip AI v22 M4 architecture
+# Clip AI v23 M5 architecture
 
-v21 keeps the existing creative pipeline but adds durable local task/project state and an editing/export layer around it.
+Clip AI remains a local-first public product: the Next.js UI controls a FastAPI worker that performs media analysis, English speech transcription, ranking, reframing, captions and rendering on the user's PC.
 
 ```text
 Next.js web app
-  ├─ upload / authorised YouTube project
+  ├─ upload / authorised YouTube source
+  ├─ Content type + Video structure + optional subject hint
   ├─ processing profile
-  ├─ task progress + cancel/recovery
-  ├─ Best 3 + clip editor
-  ├─ caption correction + cover selection
-  ├─ Projects search/filter/resume
-  └─ System + redacted diagnostics
-             ↓
-FastAPI worker 23.0.0-beta.4
-             ↓
-media preflight + disk guard
-             ↓
-optional media normalization
-             ↓
-transcript checkpoint/cache
-  ├─ project transcript → reuse
-  ├─ local cache → reuse
-  └─ miss → FFmpeg audio chunks → faster-whisper
-             ↓
-ranking checkpoint/cache
-             ↓
-word transcript + ranked moments + copy
-             ↓
-atomic project.json (schema v22)
-             ↓
-smart reframe / active-speaker tracking / captions
-             ↓
-render cache + cover + SRT/VTT + metadata sidecar
-             ↓
-MP4 download or complete export ZIP
+  ├─ progress / recovery / Projects
+  ├─ Best 3 + replacement / trim / transcript correction
+  └─ preview / render / export
+                 ↓
+FastAPI worker 23.0.0-beta.9
+                 ↓
+FFprobe media/audio preflight
+  └─ Auto prefers a clearly labelled English audio stream
+                 ↓
+optional stable H.264/AAC normalization
+                 ↓
+English transcript checkpoint/cache (version v23.5-english-quality)
+  ├─ current project transcript → reuse
+  ├─ current content-keyed cache → reuse
+  └─ miss → FFmpeg mono audio chunks
+                 ↓
+Whisper transcription
+  ├─ Balanced → base.en, stronger beam
+  ├─ Fast/Low-memory → tiny.en + confidence rescue to base.en
+  └─ explicit subject hint → initial context + hotwords when supported
+                 ↓
+transcript quality check
+  ├─ word confidence
+  ├─ weakest sentence confidence
+  ├─ low-confidence ratio
+  └─ repetition/hallucination signal
+                 ↓
+questionable chunk only → stronger second pass → keep better result
+                 ↓
+scene-local narrative ranking
+  ├─ setup/payoff/reaction continuation
+  ├─ boundary confidence
+  ├─ boundary repair cost
+  └─ diverse Best 3
+                 ↓
+grounded title / description / max-5 useful tags
+                 ↓
+smart reframe + ASS captions from transcript words
+  └─ intentional clean/cinematic line breaks
+                 ↓
+MP4 / cover / SRT / VTT / metadata / export ZIP
 ```
 
-## Persistent local state
+## Speech policy
 
-Project state lives under `WORK_DIR/<project-id>/project.json`. v21 adds a small task ledger at:
+Local speech transcription is intentionally English-only. There is no language selector, language-detection model, or automatic Japanese/other-language translation. If multiple audio streams exist, Clip AI automatically prefers a clearly-labelled English dub. A clearly-labelled non-English-only track is rejected with a clear message asking for an English dub/source. Unlabelled streams are allowed because many normal English files omit language metadata.
 
-```text
-WORK_DIR/_state/tasks.json
-```
+The optional subject hint is the only trusted vocabulary context for Whisper. M5 may provide that hint as hotwords if the installed faster-whisper build exposes the feature. Filenames are never used as trusted speech terms.
 
-If the worker closes while a task is running, that task is converted to a recoverable interrupted state on the next start. Resume re-enters the normal analysis pipeline and relies on saved checkpoints rather than blindly discarding completed work.
+## Caption fidelity
 
-## Project migrations
+Spoken captions and social copy remain separate. ASS captions are built from the actual word-timed transcript. M5 may change **where a visual line break appears**, but it does not rewrite the spoken words. Manual transcript corrections preserve existing word timings when possible.
 
-`project.json` uses schema version 22. Older local projects are migrated additively when loaded. New fields receive safe defaults; saved source/transcripts/clips/renders remain intact. Writes use a temporary file and replace pattern to reduce partial JSON corruption after a crash.
+## Anime visual contract
 
-## Media normalization
+Anime Auto must remain:
+- true-black 9:16 canvas;
+- **Focus + Compact** central picture (roughly 62.5% / 3.75 of 6 vertical parts);
+- Cinematic caption style;
+- captions low **inside the actual anime picture**, never in the black bars;
+- calm scene-aware tracking.
 
-FFprobe is used before transcription to inspect streams, codecs, dimensions, frame rate and rotation metadata. Media that is likely to cause inconsistent downstream behavior can be converted once to `normalized.mp4` using H.264 video and AAC audio. The original source is retained.
+## Persistent state / safety
 
-## Processing profiles
+Projects live under `WORK_DIR/<project-id>`. Durable state includes project metadata, transcript, ranked clips and finished renders. The cross-project transcript cache is disposable; per-project transcripts are durable. Transcript cache identity includes the transcription strategy/version and chosen audio track. The M5 strategy bump refreshes old M4.4 transcripts only when the project is re-analysed.
 
-Profiles centralize resource choices rather than exposing implementation settings to normal users:
+## UI rule
 
-| Profile | Audio chunks | CPU threads | Intended use |
-| --- | ---: | ---: | --- |
-| Low memory | 300s | 2 | constrained/RAM-sensitive machine |
-| Balanced | 600s | 4 | default local beta |
-| Fast | 1200s | 6 | machine has spare CPU/RAM |
-
-Actual render/transcription behavior still respects the existing local model/backend settings.
-
-## Checkpoints and caches
-
-Clip AI can reuse:
-- existing project transcript;
-- content-keyed transcript cache;
-- saved ranked clips;
-- existing rendered files/reframe data when exact inputs match.
-
-This is especially important for long videos: a later render/edit failure should not force a completed transcription to start over.
-
-## Generic export boundary
-
-The complete export package and `.metadata.json` sidecar are deliberately generic. They contain finished media metadata but do not reference or require any private companion application. This keeps the public Clip AI product standalone.
-
-## Security/support boundary
-
-The diagnostics endpoint produces a ZIP of useful environment/project/task information while excluding API keys, transcript contents and obvious secrets. It is a support artifact, not telemetry; nothing is uploaded automatically.
-
-## Future hosted deployment
-
-A hosted public release should replace local disk/task state with authenticated accounts, object storage, a database and a durable queue; processing should run on isolated scalable workers. v21's project/checkpoint boundaries are designed to make that migration easier later.
-
-
-## v22 context and M2 ranking
-
-Projects persist requested/resolved content type, requested/resolved structure, optional subject hint, confidence/signals, and a local context envelope per clip. M2's local selector records scene bounds, moment types and quality warnings; the context envelope is clamped to the scene. Existing M1 projects retain their saved clips when resumed.
-
-## v22 M4 visual pipeline
-
-The render endpoint resolves the saved project content type before visual analysis. `plan_smart_reframe()` only scans the requested clip range on a <=480 px proxy. Anime/film gets a conservative cinematic profile, gameplay/documentary can use saliency-guided visual tracking, and podcast/talking-head clips retain speaker-aware behavior. Shot cuts clear stale tracking state and split stabilization into independent scenes.
-
-Auto anime rendering uses `preserve`, which scales the whole source frame into the 9:16 canvas. `picture_window()` exposes the actual visible source rectangle so ASS captions stay inside the anime/film picture. Repeated lower subtitle-like samples cause Auto captions to move away from the lower band. The public `meme` style was merged into `viral`, with the old API value retained as a compatibility alias.
-
-## v22 M6 freeze notes
-
-- Multi-audio sources use a persisted 1-based `audio_track`; `0` means source default/Auto. Track selection is part of transcript-cache identity.
-- When multiple audio tracks exist, the selected stream is normalized into the stable H.264/AAC working copy so transcription and later rendering stay consistent.
-- Per-project cleanup can discard source/normalized media only after a finished render exists. Transcript, metadata, final renders, covers and export packages are durable.
-- The cross-project transcript cache is disposable and bounded; per-project transcript checkpoints are durable.
-
-
-## v23 M1 narrative ranking
-
-The local ranker remains transcript-first and scene-local, but candidate endpoints now pass a narrative assessment. Strongly incomplete question/setup/payoff boundaries are skipped and generation continues within the same scene. Narrative extension cannot cross scene boundaries. `Narrative` is exposed in `score_breakdown`; candidate context stores completeness/continuation values for diagnostics.
+Keep the public Create form focused on Content type, Video structure, optional Show/program/subject, and Processing profile. Do not re-add Clip length, Audio track or language selectors unless explicitly requested.

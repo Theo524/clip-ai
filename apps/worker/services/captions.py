@@ -155,6 +155,55 @@ def _join_words(words: list[WordCue]) -> str:
     return _join_word_texts([word.text for word in words])
 
 
+def _plain_word(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9']+", "", value).lower()
+
+
+def _natural_caption_text(text: str, style: str, content_type: str | None = None) -> str:
+    """Add one intentional line break for dense clean/cinematic captions.
+
+    libass can wrap automatically, but automatic wrapping often leaves articles or
+    connectors stranded at the edge of a line. M5 chooses a balanced grammatical
+    split so film/anime captions read like phrases rather than a word-count chunk.
+    """
+    clean = _clean_text(text)
+    if style not in {"cinematic", "clean"}:
+        return clean
+    words = clean.split()
+    if len(words) < 7 or len(clean) < 30:
+        return clean
+
+    cfg = _effective_style_config(style, content_type)
+    # A little headroom below the total phrase cap keeps both rows visually compact.
+    per_line_cap = max(20, min(32, int(cfg["max_chars"] * 0.68)))
+    candidates: list[tuple[float, int]] = []
+    for split in range(3, len(words) - 2):
+        left = " ".join(words[:split])
+        right = " ".join(words[split:])
+        if len(left) > per_line_cap + 5 or len(right) > per_line_cap + 5:
+            continue
+        left_last = _plain_word(words[split - 1])
+        right_first = _plain_word(words[split])
+        score = abs(len(left) - len(right)) * 1.0
+        if left_last in _WEAK_EDGE_WORDS:
+            score += 24
+        # Starting the second line with a contrast/consequence can be natural, while
+        # starting it with an article/preposition usually looks machine-split.
+        if right_first in {"a", "an", "the", "of", "to", "for", "with", "at", "from", "by", "as"}:
+            score += 18
+        if re.search(r"[,;:]$", words[split - 1]):
+            score -= 8
+        if right_first in {"but", "because", "so", "then", "when", "if", "however"}:
+            score -= 4
+        candidates.append((score, split))
+    if not candidates:
+        return clean
+    _, split = min(candidates)
+    left = " ".join(words[:split])
+    right = " ".join(words[split:])
+    return f"{left}\n{right}"
+
+
 def _split_text(text: str, max_words: int, max_chars: int) -> list[str]:
     words = _clean_text(text).split()
     if not words:
@@ -510,7 +559,7 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
                         f"Dialogue: 0,{_ass_time(cue_start)},{_ass_time(cue_end)},Default,,0,0,0,,{stable_override}{display}"
                     )
             else:
-                display = _escape_ass(phrase.text)
+                display = _escape_ass(_natural_caption_text(phrase.text, style, content_type))
                 lines.append(
                     f"Dialogue: 0,{_ass_time(phrase.start)},{_ass_time(max(phrase.end, phrase.start + 0.05))},Default,,0,0,0,,{phrase_override}{display}"
                 )
@@ -526,7 +575,11 @@ Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text
         if not fallback:
             fallback = [(0.0, min(max(clip_end - clip_start, 0.5), 1.0), " ")]
         for start, end, text in fallback:
-            display = _escape_ass(text.upper() if style == "meme" else text)
+            if style == "meme":
+                display_text = text.upper()
+            else:
+                display_text = _natural_caption_text(text, style, content_type)
+            display = _escape_ass(display_text)
             lines.append(
                 f"Dialogue: 0,{_ass_time(start)},{_ass_time(max(end, start + 0.05))},Default,,0,0,0,,{phrase_override}{display}"
             )

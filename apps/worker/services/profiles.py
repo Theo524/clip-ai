@@ -25,14 +25,14 @@ PROFILES = {
         chunk_seconds=300,
         cpu_threads=4,
         render_preset="veryfast",
-        description="Recommended default with memory-safe 5 minute transcription chunks.",
+        description="Recommended default with memory-safe chunks and a higher-accuracy English speech model.",
     ),
     "fast": ProcessingProfile(
         name="fast",
         chunk_seconds=600,
         cpu_threads=6,
         render_preset="faster",
-        description="Larger chunks for desktops with comfortable memory headroom.",
+        description="Larger chunks and a faster first-pass speech model, with automatic accuracy rescue when needed.",
     ),
 }
 

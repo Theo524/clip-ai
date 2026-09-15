@@ -795,7 +795,7 @@ export default function Home() {
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
-          <div className="badge">v23 · stable candidate</div>
+          <div className="badge">v23 · M5 final quality</div>
         </div>
       </nav>
 
@@ -1359,7 +1359,7 @@ export default function Home() {
                                 ) : (
                                   <>
                                     <label><span>Correct transcript used for captions</span><textarea rows={5} value={transcriptText[index] || ""} onChange={(e) => setTranscriptText((current) => ({ ...current, [index]: e.target.value }))} /></label>
-                                    <div className="captionCorrectionActions"><button type="button" className="copyButton saveCopyButton" onClick={() => saveTranscriptRange(index)} disabled={transcriptBusy !== null}>{transcriptBusy === index ? "Saving…" : "Save caption corrections"}</button><small>Saving corrections rebuilds word timing evenly across this clip range on the next render.</small></div>
+                                    <div className="captionCorrectionActions"><button type="button" className="copyButton saveCopyButton" onClick={() => saveTranscriptRange(index)} disabled={transcriptBusy !== null}>{transcriptBusy === index ? "Saving…" : "Save caption corrections"}</button><small>Saving corrections preserves the original speech rhythm where possible and updates the next render.</small></div>
                                   </>
                                 )}
                               </div>
@@ -1515,7 +1515,7 @@ export default function Home() {
             </div>
               </div>
             </details>
-            <div className="footNote">v23 quality pass prioritises complete, distinct moments while keeping Anime Cinematic captions locked low inside the picture.</div>
+            <div className="footNote">M5 sharpens English speech accuracy, caption phrasing, metadata and setup/payoff/reaction boundaries while keeping Anime Cinematic captions locked low inside the picture.</div>
           </section>
         )}
       </main>
@@ -1526,7 +1526,7 @@ export default function Home() {
             <div className="onboardingTop">
               <span className="onboardingMark">✦</span>
               <div>
-                <span className="onboardingKicker">Clip AI v23 · Stable Candidate</span>
+                <span className="onboardingKicker">Clip AI v23 · Final Quality Pass</span>
                 <h2 id="welcome-title">You do not need to learn the editor first.</h2>
               </div>
             </div>

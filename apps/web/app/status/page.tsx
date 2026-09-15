@@ -97,7 +97,7 @@ export default function StatusPage() {
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink activeNav" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v23 · stable candidate</div>
+          <div className="badge">v23 · M5 final quality</div>
         </div>
       </nav>
 
@@ -159,7 +159,7 @@ export default function StatusPage() {
 
             <section className="betaNotice">
               <strong>What “beta” means here</strong>
-              <p>v23 Stable Candidate keeps the classic anime cinematic window and adds stricter narrative completeness, stronger Best 3 diversity and regression hardening.</p>
+              <p>v23 M5 keeps the classic anime cinematic window and improves English speech accuracy, caption phrasing, grounded metadata and boundary quality without reintroducing multilingual transcription.</p>
               <code>{data.work_dir}</code>
             </section>
           </>

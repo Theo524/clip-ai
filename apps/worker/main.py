@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, PlainTextResponse
 
 from models import AnalyzeRequest, AnalyzeResponse, CleanupResponse, ClipCandidate, ClipCopyGenerateRequest, ClipCopyResponse, ClipCopyUpdateRequest, ClipFeedbackRequest, ClipTimingUpdateRequest, CoverRequest, ProjectCleanupRequest, ProjectCleanupResponse, ProjectDetail, ProjectNotesUpdateRequest, ProjectSummary, RenderClipRequest, RenderClipResponse, SystemCheck, SystemPreflightResponse, TaskCreateResponse, TaskStatusResponse, TranscriptEditRequest, TranscriptRangeResponse, TranscriptSegment, YouTubeInfoResponse
 from settings import settings
-from services.media import cut_clip, extract_audio_chunks, extract_cover_frame, normalize_media, probe_media, probe_media_audio, render_adaptive_short, should_normalize_media
+from services.media import cut_clip, extract_audio_chunks, extract_cover_frame, is_memory_allocation_error, normalize_media, probe_media, probe_media_audio, render_adaptive_short, should_normalize_media
 from services.captions import write_clip_ass
 from services.mock import mock_clips
 from services.reframe import ReframePlan, load_reframe_plan, plan_smart_reframe, save_reframe_plan
@@ -32,9 +32,11 @@ from services.diagnostics import build_diagnostic_zip
 from services.transcript_cache import cleanup_transcript_cache, load_cached_transcript, save_cached_transcript, transcript_cache_key
 from services.context import candidate_context, normalize_content_structure, normalize_content_type, normalize_subject_hint, resolve_content_context
 from services.smart_rank import RANKING_VERSION, detect_shot_boundaries, rank_clip_candidates_m2
+from services.transcript_edit import corrected_segment_with_preserved_timing
 
-APP_VERSION = "23.0.0-beta.4"
-RELEASE_NAME = "Quality Pass · Stable Candidate"
+APP_VERSION = "23.0.0-beta.9"
+RELEASE_NAME = "M5 Final Quality Pass"
+TRANSCRIPTION_VERSION = "v23.5-english-quality"
 
 app = FastAPI(title="Clip AI Worker", version=APP_VERSION)
 app.add_middleware(
@@ -129,19 +131,105 @@ def _load_transcript(job_id: str) -> list[TranscriptSegment]:
         raise HTTPException(status_code=500, detail=f"Stored transcript could not be read: {exc}") from exc
 
 
-def _transcribe_chunk(chunk_path: str, offset_seconds: float, *, vad_filter: bool = True, cpu_threads: int | None = None):
+def _normalize_language_code(value: str | None) -> str:
+    raw = (value or "").strip().lower().replace("_", "-")
+    aliases = {
+        "eng": "en", "en-us": "en", "en-gb": "en",
+        "jpn": "ja", "jp": "ja",
+        "spa": "es", "esp": "es",
+        "fre": "fr", "fra": "fr",
+        "ger": "de", "deu": "de",
+        "ita": "it", "por": "pt",
+        "kor": "ko", "chi": "zh", "zho": "zh",
+        "rus": "ru", "ara": "ar", "hin": "hi",
+    }
+    return aliases.get(raw, raw.split("-", 1)[0] if raw else "")
+
+
+def _audio_track_language(info: dict, track_number: int) -> str:
+    track = next((item for item in info.get("audio_tracks", []) if int(item.get("track", 0)) == int(track_number)), {})
+    language = _normalize_language_code(track.get("language"))
+    title = str(track.get("title") or "").lower()
+    if not language:
+        if "english" in title or " dub" in f" {title}":
+            return "en"
+        if "japanese" in title or "日本" in title:
+            return "ja"
+    return language
+
+
+def _choose_automatic_audio_track(info: dict) -> int:
+    """Prefer an English track when one is clearly labelled; otherwise use default.
+
+    The audio selector was intentionally removed from the public UI. This keeps dual-audio
+    anime convenient without bringing that setting back.
+    """
+    tracks = info.get("audio_tracks", []) or []
+    for item in tracks:
+        lang = _normalize_language_code(item.get("language"))
+        title = str(item.get("title") or "").lower()
+        if lang == "en" or "english" in title or "eng dub" in title:
+            return int(item.get("track") or 1)
+    return int(info.get("default_audio_track") or (1 if tracks else 0))
+
+
+def _validate_english_audio(info: dict, track_number: int) -> None:
+    """Reject clearly-labelled non-English audio instead of producing misleading captions.
+
+    Unknown/unlabelled streams are allowed because many ordinary English files have no
+    language metadata. Dual-audio files still automatically prefer a labelled English dub.
+    """
+    language = _audio_track_language(info, track_number)
+    if language and language not in {"en", "und", "unknown"}:
+        label = language.upper()
+        raise RuntimeError(
+            f"Clip AI local transcription is English-only. The selected audio track is labelled {label}. "
+            "Use an English dub/audio source for this video."
+        )
+
+
+def _trusted_speech_hint(subject_hint: str | None) -> str:
+    # Only user-supplied context is trusted for speech vocabulary. Filenames are never
+    # promoted into Whisper context because they can contain release-group noise or
+    # words that are not actually spoken.
+    clean = re.sub(r"\s+", " ", str(subject_hint or "")).strip(" .,_-")
+    return clean[:160]
+
+
+def _whisper_prompt(subject_hint: str | None, project_title: str | None = None) -> str | None:
+    clean = _trusted_speech_hint(subject_hint)
+    return f"{clean[:120]}." if clean else None
+
+
+def _whisper_hotwords(subject_hint: str | None) -> str | None:
+    """Return conservative proper-name vocabulary for faster-whisper when supported."""
+    clean = _trusted_speech_hint(subject_hint)
+    if not clean:
+        return None
+    # Keep the complete trusted label, plus meaningful constituent words. This helps
+    # names such as "Attack on Titan" survive noisy dialogue without inventing terms.
+    pieces = [clean]
+    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9'’.-]{2,}", clean):
+        if token.lower() not in {"the", "and", "for", "with", "from"} and token.lower() not in {p.lower() for p in pieces}:
+            pieces.append(token)
+    return ", ".join(pieces)[:220]
+
+
+def _transcribe_chunk(chunk_path: str, offset_seconds: float, *, vad_filter: bool = True, cpu_threads: int | None = None, options: dict | None = None):
     backend = settings.transcription_backend.lower().strip()
 
     if backend == "local":
         from services.transcribe import transcribe_local_with_timestamps
+        opts = dict(options or {})
         return transcribe_local_with_timestamps(
             chunk_path,
-            model_name=settings.local_whisper_model,
+            model_name=str(opts.pop("model_name", settings.local_whisper_model)),
             device=settings.local_whisper_device,
             compute_type=settings.local_whisper_compute_type,
             offset_seconds=offset_seconds,
             vad_filter=vad_filter,
             cpu_threads=cpu_threads or settings.local_whisper_cpu_threads,
+            **opts,
         )
 
     if backend == "openai":
@@ -157,11 +245,10 @@ def _transcribe_chunk(chunk_path: str, offset_seconds: float, *, vad_filter: boo
 
     raise RuntimeError("TRANSCRIPTION_BACKEND must be 'local' or 'openai'.")
 
-
 def _transcription_strategy() -> str:
     backend = settings.transcription_backend.lower().strip()
     if backend == "local":
-        return f"local:{settings.local_whisper_model}:{settings.local_whisper_compute_type}:word-v20.1"
+        return f"local:english-only:{settings.local_whisper_compute_type}:{TRANSCRIPTION_VERSION}"
     return f"openai:{settings.openai_transcribe_model}:word-v20.1"
 
 
@@ -175,8 +262,27 @@ def _is_memory_allocation_error(exc: BaseException) -> bool:
         "arraymemoryerror" in name
         or "unable to allocate" in text
         or "cannot allocate memory" in text
+        or "failed to allocate memory" in text
+        or "mkl_malloc" in text
+        or "bad_alloc" in text
+        or "bad allocation" in text
+        or "not enough memory" in text
         or "out of memory" in text
     )
+
+
+def _lower_memory_whisper_options(options: dict | None) -> dict | None:
+    """Fall back from the stronger English model to tiny.en under RAM pressure."""
+    if not options:
+        return None
+    current = str(options.get("model_name") or "").strip()
+    lowered = dict(options)
+    if current == settings.local_whisper_refine_model and settings.local_whisper_model != current:
+        lowered["model_name"] = settings.local_whisper_model
+        lowered["beam_size"] = 1
+        lowered["condition_on_previous_text"] = False
+        return lowered
+    return None
 
 
 def _transcribe_chunk_memory_safe(
@@ -188,6 +294,7 @@ def _transcribe_chunk_memory_safe(
     split_seconds: int = 120,
     cancel_event=None,
     on_fallback=None,
+    options: dict | None = None,
 ):
     """Transcribe a chunk and automatically retry NumPy STFT OOMs in smaller pieces.
 
@@ -197,15 +304,50 @@ def _transcribe_chunk_memory_safe(
     failing chunk keeps timestamps accurate and avoids restarting the whole analysis.
     """
     try:
-        return _transcribe_chunk(
-            chunk_path,
+        kwargs = dict(
             offset_seconds=offset_seconds,
             vad_filter=vad_filter,
             cpu_threads=cpu_threads,
         )
+        if options is not None:
+            kwargs["options"] = options
+        try:
+            return _transcribe_chunk(chunk_path, **kwargs)
+        except TypeError as type_exc:
+            # Older test doubles / extension hooks may implement the pre-v23.4 helper
+            # signature. Keep that compatibility without weakening the real path.
+            if options is not None and "options" in str(type_exc) and "unexpected keyword" in str(type_exc):
+                kwargs.pop("options", None)
+                return _transcribe_chunk(chunk_path, **kwargs)
+            raise
     except Exception as exc:
         if settings.transcription_backend.lower().strip() != "local" or not _is_memory_allocation_error(exc):
             raise
+
+        # First recover from model-level memory pressure by dropping from base.en to
+        # tiny.en before shortening the audio. The normal quality model is attempted first.
+        active_options = options
+        lower_options = _lower_memory_whisper_options(options)
+        if lower_options is not None:
+            try:
+                from services.transcribe import clear_local_model_cache
+                clear_local_model_cache()
+            except Exception:
+                pass
+            gc.collect()
+            retry_kwargs = dict(
+                offset_seconds=offset_seconds,
+                vad_filter=vad_filter,
+                cpu_threads=max(1, min(int(cpu_threads), 2)),
+                options=lower_options,
+            )
+            try:
+                return _transcribe_chunk(chunk_path, **retry_kwargs)
+            except Exception as lower_exc:
+                if not _is_memory_allocation_error(lower_exc):
+                    raise
+                exc = lower_exc
+                active_options = lower_options
 
         gc.collect()
         seconds = max(30, min(int(split_seconds), 120))
@@ -245,6 +387,7 @@ def _transcribe_chunk_memory_safe(
                     split_seconds=next_split,
                     cancel_event=cancel_event,
                     on_fallback=on_fallback,
+                    options=active_options,
                 )
             )
             gc.collect()
@@ -345,7 +488,7 @@ def analyze_local_media(
         audio_count = int(detailed_info.get("audio_streams") or 0)
         if audio_track > audio_count:
             raise RuntimeError(f"Audio track {audio_track} was selected, but this video only has {audio_count} audio track(s).")
-        selected_audio_track = audio_track or int(detailed_info.get("default_audio_track") or 1)
+        selected_audio_track = audio_track or _choose_automatic_audio_track(detailed_info)
         if audio_count > 1:
             track_info = next((item for item in detailed_info.get("audio_tracks", []) if int(item.get("track", 0)) == selected_audio_track), {})
             label_bits = [str(track_info.get("language") or "").upper(), str(track_info.get("title") or "")]
@@ -376,7 +519,13 @@ def analyze_local_media(
         duration = float(detailed_info.get("duration") or 0.0)
         effective_chunk_seconds = min(settings.audio_chunk_seconds, profile.chunk_seconds)
         if duration >= 1800:
-            effective_chunk_seconds = min(effective_chunk_seconds, 600 if profile.name != "low-memory" else 300)
+            effective_chunk_seconds = min(effective_chunk_seconds, 300 if profile.name != "fast" else 480)
+        if duration >= 2700:
+            # Hour-ish sources are the highest-RAM path on typical 8 GB Windows PCs.
+            # Smaller chunks reduce MKL/STFT spikes without forcing every short video
+            # into the slower low-memory profile.
+            long_cap = 120 if profile.name == "low-memory" else (180 if profile.name == "balanced" else 300)
+            effective_chunk_seconds = min(effective_chunk_seconds, long_cap)
 
         save_project(job_dir, {
             "job_id": resolved_job_id,
@@ -401,7 +550,9 @@ def analyze_local_media(
         cache_key = transcript_cache_key(media_path, f"{_transcription_strategy()}:audio:{selected_audio_track}")
         segments: list[TranscriptSegment] = []
 
-        if transcript_path.exists():
+        existing_before_transcribe = load_project(job_dir) or {}
+        transcript_is_current = str(existing_before_transcribe.get("transcription_version") or "") == TRANSCRIPTION_VERSION
+        if transcript_path.exists() and transcript_is_current:
             try:
                 raw = json.loads(transcript_path.read_text(encoding="utf-8"))
                 segments = [TranscriptSegment.model_validate(item) for item in raw]
@@ -409,7 +560,7 @@ def analyze_local_media(
                 segments = []
             if segments:
                 transcript_source = "saved-project"
-                notify(64, "Using saved transcript", "This project was already transcribed, so Clip AI skipped Whisper.")
+                notify(64, "Using saved transcript", "This project already has the current quality transcript, so Clip AI skipped Whisper.")
 
         if not segments:
             cached = load_cached_transcript(cache_root, cache_key)
@@ -417,6 +568,12 @@ def analyze_local_media(
                 segments = cached
                 transcript_source = "cache"
                 notify(64, "Using transcript cache", "This same video was transcribed before, so Clip AI reused the cached transcript.")
+
+        detected_language = "en" if transcript_is_current else "unknown"
+        language_confidence = 0.0
+        translated_to_english = False
+        transcript_quality_meta = dict(existing_before_transcribe.get("transcript_quality") or {}) if transcript_is_current else {}
+        refined_chunks = int(existing_before_transcribe.get("transcript_refined_chunks") or 0) if transcript_is_current else 0
 
         if not segments:
             transcription_started = time.monotonic()
@@ -431,8 +588,37 @@ def analyze_local_media(
                 cancel_event=cancel_event,
             )
 
+            primary_options: dict = {}
+            refine_options: dict = {}
+            if settings.transcription_backend.lower().strip() == "local":
+                from services.transcribe import choose_better_transcript, transcript_quality
+
+                _validate_english_audio(detailed_info, selected_audio_track)
+                detected_language = "en" if _audio_track_language(detailed_info, selected_audio_track) == "en" else "unknown"
+                prompt = _whisper_prompt(clean_subject_hint, project_title or Path(media_path).stem)
+                hotwords = _whisper_hotwords(clean_subject_hint)
+                primary_english_model = (
+                    settings.local_whisper_refine_model
+                    if profile.name == "balanced"
+                    else settings.local_whisper_model
+                )
+                primary_options = {
+                    "model_name": primary_english_model,
+                    "language": "en",
+                    "task": "transcribe",
+                    "initial_prompt": prompt,
+                    "hotwords": hotwords,
+                    "beam_size": 3 if profile.name == "balanced" else 1,
+                    "condition_on_previous_text": True,
+                }
+                refine_options = {**primary_options, "model_name": settings.local_whisper_refine_model, "beam_size": 5}
+                mode_label = "higher-accuracy" if profile.name == "balanced" else "fast"
+                notify(12, "Speech ready", f"English transcription · {mode_label} pass with automatic accuracy rescue.")
+
             total_chunks = max(1, len(chunks))
             chunk_times: list[float] = []
+            chunk_quality_scores: list[float] = []
+            refined_chunks = 0
             for index, chunk_path in enumerate(chunks):
                 check_cancel()
                 pct = 18 + int((index / total_chunks) * 46)
@@ -457,6 +643,7 @@ def analyze_local_media(
                     split_seconds=min(120, max(60, effective_chunk_seconds // 2)),
                     cancel_event=cancel_event,
                     on_fallback=memory_fallback,
+                    options=primary_options or None,
                 )
                 # VAD is excellent for speed but can reject quiet film dialogue/music-heavy
                 # mixes. An empty chunk gets one automatic full-audio retry.
@@ -471,7 +658,29 @@ def analyze_local_media(
                         split_seconds=min(120, max(60, effective_chunk_seconds // 2)),
                         cancel_event=cancel_event,
                         on_fallback=memory_fallback,
+                        options=primary_options or None,
                     )
+
+                if chunk_segments and settings.transcription_backend.lower().strip() == "local":
+                    quality = transcript_quality(chunk_segments)
+                    if bool(quality.get("needs_refinement")):
+                        notify(pct, "Improving transcript", f"Chunk {index + 1} had uncertain words. Running a focused accuracy pass…")
+                        check_cancel()
+                        refined = _transcribe_chunk_memory_safe(
+                            chunk_path,
+                            offset_seconds=index * effective_chunk_seconds,
+                            vad_filter=True,
+                            cpu_threads=profile.cpu_threads,
+                            split_seconds=min(120, max(60, effective_chunk_seconds // 2)),
+                            cancel_event=cancel_event,
+                            on_fallback=memory_fallback,
+                            options=refine_options or primary_options or None,
+                        )
+                        chunk_segments, quality, used_refinement = choose_better_transcript(chunk_segments, refined)
+                        if used_refinement:
+                            refined_chunks += 1
+                    chunk_quality_scores.append(float(quality.get("score") or 0.0))
+
                 chunk_times.append(max(0.01, time.monotonic() - started))
                 segments.extend(chunk_segments)
                 del chunk_segments
@@ -480,12 +689,19 @@ def analyze_local_media(
                 if index + 1 < total_chunks:
                     average = sum(chunk_times) / len(chunk_times)
                     notify(completed_pct, "Transcribing", f"Finished chunk {index + 1} of {total_chunks} · {_eta_text(average * (total_chunks - index - 1))}")
+
+            if settings.transcription_backend.lower().strip() == "local":
+                overall = transcript_quality(segments)
+                transcript_quality_meta = dict(overall)
+                if chunk_quality_scores:
+                    transcript_quality_meta["average_chunk_score"] = round(sum(chunk_quality_scores) / len(chunk_quality_scores), 2)
+                transcript_quality_meta["refined_chunks"] = refined_chunks
             transcription_seconds = max(0.0, time.monotonic() - transcription_started)
 
         check_cancel()
         if not segments:
             raise RuntimeError(
-                "No English speech could be transcribed. Clip AI retried without the silence filter; check that the dialogue is audible and not muted or extremely quiet."
+                "No usable speech could be transcribed. Clip AI retried without the silence filter; check that the dialogue is audible and not muted or extremely quiet."
             )
 
         notify(68, "Saving transcript", "Saving word-level timestamps and transcript cache…")
@@ -512,6 +728,12 @@ def analyze_local_media(
             "duration_preference": duration_preference,
             "context_confidence": context.confidence,
             "context_signals": list(context.signals),
+            "transcription_version": TRANSCRIPTION_VERSION,
+            "transcript_language": detected_language or "unknown",
+            "language_confidence": round(float(language_confidence or 0.0), 4),
+            "translated_to_english": translated_to_english,
+            "transcript_quality": transcript_quality_meta,
+            "transcript_refined_chunks": refined_chunks,
         })
 
         check_cancel()
@@ -574,7 +796,7 @@ def analyze_local_media(
             clip.description = generated.description
             clip.hashtags = list(generated.hashtags)
             clip.social_caption = generated.social_caption
-            clip.context = {**(clip.context or {}), "grounded_terms": list(generated.grounded_terms), "copy_version": "m3"}
+            clip.context = {**(clip.context or {}), "grounded_terms": list(generated.grounded_terms), "copy_version": "q1"}
             if clips:
                 notify(84 + int(((idx + 1) / len(clips)) * 8), "Writing metadata", f"Polishing clip {idx + 1} of {len(clips)}…")
         metadata_seconds = max(0.0, time.monotonic() - metadata_started)
@@ -602,6 +824,12 @@ def analyze_local_media(
                 "context_confidence": context.confidence,
                 "context_signals": list(context.signals),
                 "audio_track": selected_audio_track,
+                "transcription_version": TRANSCRIPTION_VERSION,
+                "transcript_language": detected_language or "unknown",
+                "language_confidence": round(float(language_confidence or 0.0), 4),
+                "translated_to_english": translated_to_english,
+                "transcript_quality": transcript_quality_meta,
+                "transcript_refined_chunks": refined_chunks,
                 "performance": {
                     "analysis_seconds": round(max(0.0, time.monotonic() - analysis_started), 2),
                     "transcription_seconds": round(transcription_seconds, 2),
@@ -1087,6 +1315,9 @@ def _project_summary(job_dir: Path, data: dict) -> ProjectSummary:
         audio_track_count=int((data.get("media_preflight") or {}).get("audio_streams") or 0),
         source_available=source_available(job_dir),
         analysis_seconds=float((data.get("performance") or {}).get("analysis_seconds") or 0.0),
+        transcript_language=str(data.get("transcript_language") or "unknown"),
+        translated_to_english=bool(data.get("translated_to_english") or False),
+        transcript_quality_score=float((data.get("transcript_quality") or {}).get("score") or 0.0),
     )
 
 
@@ -1199,16 +1430,8 @@ def edit_transcript_range(job_id: str, request: TranscriptEditRequest):
     transcript = _load_transcript(job_id)
     text = " ".join(request.text.split())
     keep = [s for s in transcript if s.end < request.start or s.start > request.end]
-    words = text.split()
-    new_segment = None
-    if words:
-        duration = max(0.1, request.end - request.start)
-        word_items = []
-        for i, word in enumerate(words):
-            a = request.start + duration * (i / len(words))
-            b = request.start + duration * ((i + 1) / len(words))
-            word_items.append({"start": a, "end": b, "text": word})
-        new_segment = TranscriptSegment(start=request.start, end=request.end, text=text, words=word_items)
+    new_segment = corrected_segment_with_preserved_timing(transcript, request.start, request.end, text)
+    if new_segment is not None:
         keep.append(new_segment)
     keep.sort(key=lambda item: item.start)
     transcript_path = _job_dir(job_id) / "transcript.json"
@@ -1356,7 +1579,7 @@ def generate_clip_copy(job_id: str, clip_index: int, request: ClipCopyGenerateRe
         "description": generated.description,
         "hashtags": list(generated.hashtags),
         "social_caption": generated.social_caption,
-        "context": {**(clips[clip_index].get("context") or {}), "grounded_terms": list(generated.grounded_terms), "copy_version": "m3"},
+        "context": {**(clips[clip_index].get("context") or {}), "grounded_terms": list(generated.grounded_terms), "copy_version": "q1"},
     }
     save_project(job_dir, {**data, "clips": clips})
     return ClipCopyResponse(
@@ -1636,6 +1859,15 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
         if output.exists() and output.stat().st_size > 0:
             notify(89, "Using cached Short", "This exact Short already exists, so Clip AI skipped encoding.")
         else:
+            # Whisper/CTranslate2 is not needed for rendering. On 8 GB Windows machines the
+            # cached speech model can otherwise leave x264 unable to allocate even a few MB.
+            try:
+                from services.transcribe import clear_local_model_cache
+                clear_local_model_cache()
+            except Exception:
+                pass
+            gc.collect()
+
             notify(55, "Rendering Short", "Encoding the vertical video. This is usually the longest step…")
             try:
                 render_adaptive_short(
@@ -1645,26 +1877,42 @@ def _render_short_core(request: RenderClipRequest, *, progress=None, cancel_even
                 )
             except CancelledError:
                 raise
-            except Exception:
-                # Reliability fallback: if a dynamic tracking expression or unusual source
-                # breaks FFmpeg, retry once with a safe centered path instead of failing outright.
-                if reframe_plan.mode == "center":
-                    raise
-                check_cancel()
-                notify(67, "Retrying safely", "The smart crop hit an encoding problem. Retrying with stable center framing…")
-                duration = max(0.05, render_end - render_start)
-                safe_plan = ReframePlan(
-                    mode="center",
-                    keyframes=[(0.0, 0.5), (duration, 0.5)],
-                    source_width=reframe_plan.source_width,
-                    source_height=reframe_plan.source_height,
-                )
-                render_adaptive_short(
-                    str(source), str(output), str(subtitles), render_start, render_end,
-                    reframe_plan=safe_plan, layout_mode=layout_mode, frame_size=frame_size,
-                    width=render_width, height=render_height, cancel_event=cancel_event,
-                )
-                reframe_plan = safe_plan
+            except Exception as exc:
+                if is_memory_allocation_error(exc):
+                    check_cancel()
+                    notify(64, "Freeing memory", "The encoder ran low on RAM. Retrying with a low-memory x264 configuration…")
+                    try:
+                        from services.transcribe import clear_local_model_cache
+                        clear_local_model_cache()
+                    except Exception:
+                        pass
+                    gc.collect()
+                    render_adaptive_short(
+                        str(source), str(output), str(subtitles), render_start, render_end,
+                        reframe_plan=reframe_plan, layout_mode=layout_mode, frame_size=frame_size,
+                        width=render_width, height=render_height,
+                        encoder_preset="ultrafast", encoder_threads=1, cancel_event=cancel_event,
+                    )
+                else:
+                    # Reliability fallback: if a dynamic tracking expression or unusual source
+                    # breaks FFmpeg, retry once with a safe centered path instead of failing outright.
+                    if reframe_plan.mode == "center":
+                        raise
+                    check_cancel()
+                    notify(67, "Retrying safely", "The smart crop hit an encoding problem. Retrying with stable center framing…")
+                    duration = max(0.05, render_end - render_start)
+                    safe_plan = ReframePlan(
+                        mode="center",
+                        keyframes=[(0.0, 0.5), (duration, 0.5)],
+                        source_width=reframe_plan.source_width,
+                        source_height=reframe_plan.source_height,
+                    )
+                    render_adaptive_short(
+                        str(source), str(output), str(subtitles), render_start, render_end,
+                        reframe_plan=safe_plan, layout_mode=layout_mode, frame_size=frame_size,
+                        width=render_width, height=render_height, cancel_event=cancel_event,
+                    )
+                    reframe_plan = safe_plan
 
         check_cancel()
         cover_filename = f"cover_v22m5_{request.platform}_{layout_mode}_{frame_size}_{caption_style}_{revision_tag}_{start_ms}_{end_ms}.jpg"

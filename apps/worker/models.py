@@ -166,6 +166,9 @@ class ProjectSummary(BaseModel):
     audio_track_count: int = 0
     source_available: bool = True
     analysis_seconds: float = 0.0
+    transcript_language: str = "unknown"
+    translated_to_english: bool = False
+    transcript_quality_score: float = 0.0
 
 
 class ProjectDetail(ProjectSummary):

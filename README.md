@@ -1,34 +1,60 @@
-# Clip AI v23 · Stable Candidate (M3)
+# Clip AI v23 M5 · Final Quality Pass
 
-Clip AI turns long English-language videos into ranked, reframed, captioned vertical Shorts. v23 focuses on one thing: **better complete moments without turning the interface into a settings dashboard**.
+Clip AI turns long videos into ranked, reframed, captioned vertical Shorts. M5 is the final desktop quality pass: no new public controls, no multilingual comeback, and no change to the established Anime Auto visual contract.
 
-## v23 quality improvements
+## M5 focus
 
-- Necessary setup and question/answer protection.
-- Setup/payoff continuation and immediate-reaction protection.
-- Dynamic duration: longer only when the scene actually needs it.
-- Stronger protection against story-heavy clips that are catchy but too short to make sense.
-- Best 3 diversity across scenes, moment types and full-text topic overlap.
-- Narrative + boundary quality influence selection so clips needing less repair win close comparisons.
-- Grounded titles, descriptions and tags remain scene-local.
-- Frontend versions are pinned to the validated Next.js/React stack for repeatable installs.
+### Stronger English speech accuracy
 
-## Intentionally simple UI
+- Local transcription remains **English-only**.
+- **Balanced** continues to use `base.en`; Fast/Low-memory keep their lighter first pass plus confidence rescue.
+- The optional Show / program / subject hint is now also supplied as trusted Whisper **hotword vocabulary** when the installed faster-whisper build supports it. This is conservative: Clip AI never promotes filenames or outside guesses into speech vocabulary.
+- Balanced uses a slightly stronger beam while keeping the existing low-memory retry path.
+- Questionable chunks still get a focused stronger second pass, and the better transcript wins.
+- M5 changes the transcript strategy version, so an old M4.4 transcript is refreshed once on re-analysis instead of silently hiding the accuracy changes.
 
-The public create form stays focused on **Content type**, **Video structure**, optional **Show / program / subject**, and the processing profile. Clip length and audio selection remain automatic.
+### More natural captions
 
-Anime Auto remains unchanged: **black vertical canvas + Compact central picture + Cinematic captions locked low inside the picture + calmer tracking**.
+- Spoken wording remains quote-faithful to the timed transcript.
+- Clean/Cinematic captions now choose intentional, balanced two-line breaks for dense phrases instead of relying entirely on libass auto-wrap.
+- Line breaking avoids leaving articles/connectors stranded at the end of a row.
+- Anime captions stay low **inside the actual Compact picture window**, exactly as before.
 
-## Windows update
+### Better titles, descriptions and tags
 
-Keep your existing project at:
+- Long dialogue is reduced to a meaningful complete clause before title length limits are applied, rather than blindly chopping a sentence.
+- Descriptions prefer punctuation/clause boundaries and avoid endings such as `...and we.` caused by word-count truncation.
+- User-supplied subject/show casing is restored consistently when that exact trusted term is already present.
+- Generic conversational verbs are filtered more aggressively from free-form hashtags.
+- No character/person names are invented.
 
-`C:\Users\PC\Downloads\clip-ai-starter`
+### Stronger setup → payoff → reaction boundaries
 
-Put the update ZIP in Downloads and run the included updater from Command Prompt. It preserves `.git`, `.venv`, projects, renders and local settings; replaces application code, runs backend tests, installs the pinned frontend stack, builds from a clean Next cache, and starts Clip AI.
+- Immediate strong reactions are treated as part of the moment even when the preceding line already sounded like a grammatical conclusion.
+- Candidates now record an internal `boundary_repair_cost` that penalizes clips needing context/ending repair.
+- Best 3 still favors complete, diverse moments rather than three variants of the same scene.
+
+## Frozen behavior
+
+The public Create form remains intentionally small:
+
+- Content type
+- Video structure
+- optional Show / program / subject
+- Processing profile
+
+There is still **no Clip length selector**, **no Audio track selector**, and **no language selector**.
+
+Anime Auto remains:
+
+- black 9:16 canvas;
+- **Focus + Compact** central picture;
+- Cinematic captions;
+- captions low inside the picture, never the black bars;
+- calm scene-aware tracking.
 
 ## Validation
 
-- Backend: **112 tests passed**
-- Python compile: clean
-- Windows updater performs the full Next.js production build before startup.
+- Backend regression suite: **135 passed, 0 failed** in the M5 source workspace.
+- Python compile: clean.
+- The Windows updater runs the backend suite again and rebuilds the Next.js frontend using the existing memory-safe build settings.

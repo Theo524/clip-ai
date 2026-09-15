@@ -25,6 +25,7 @@ type ProjectSummary = {
   audio_track_count?: number;
   source_available?: boolean;
   analysis_seconds?: number;
+  transcript_quality_score?: number;
 };
 
 function humanBytes(bytes: number) {
@@ -115,7 +116,7 @@ export default function ProjectsPage() {
           <a className="navLink activeNav" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v23 · stable candidate</div>
+          <div className="badge">v23 · quality pass</div>
         </div>
       </nav>
 
@@ -174,6 +175,7 @@ export default function ProjectsPage() {
                     {!!project.analysis_seconds && <span>{project.analysis_seconds < 60 ? `${Math.round(project.analysis_seconds)}s` : `${(project.analysis_seconds / 60).toFixed(1)}m`} analysis</span>}
                     <span>{(project.resolved_content_type || project.content_type || "other").replace("film-tv", "film / TV").replace("meme-comedy", "meme / comedy")}</span>
                     <span>{(project.resolved_content_structure || project.content_structure || "single-story").replace("single-story", "single story")}</span>
+                    {!!project.transcript_quality_score && <span>{Math.round(project.transcript_quality_score)} transcript</span>}
                   </div>
                   <div className="projectActions">
                     <a className="projectOpen" href={`/?project=${project.job_id}`}>Open project</a>

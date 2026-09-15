@@ -43,14 +43,16 @@ STOPWORDS = {
     "that's", "thats",
 }
 
+# One broad category tag is enough. v23.4 deliberately avoids padding metadata with
+# #Shorts / #AnimeClips / #PodcastClips-style filler when a more specific tag exists.
 CONTENT_TAGS = {
-    "podcast": ("Podcast", "PodcastClips"),
-    "anime": ("Anime", "AnimeClips"),
-    "film-tv": ("Film", "TVClips"),
+    "podcast": ("Podcast",),
+    "anime": ("Anime",),
+    "film-tv": (),
     "documentary": ("Documentary",),
-    "meme-comedy": ("Comedy", "FunnyClips"),
-    "gameplay": ("Gaming", "Gameplay"),
-    "other": ("Shorts",),
+    "meme-comedy": ("Comedy",),
+    "gameplay": ("Gaming",),
+    "other": (),
 }
 
 MOMENT_TAGS = {
@@ -60,7 +62,24 @@ MOMENT_TAGS = {
     "reveal": "Reveal",
     "argument": "Debate",
     "reaction": "Reaction",
-    "informative": "LearnSomething",
+    # "informative" is intentionally not turned into #LearnSomething; it reads like
+    # generic auto-generated metadata and usually adds no discovery value.
+}
+
+WEAK_TAG_WORDS = {
+    "looked", "looks", "looking", "walked", "walking", "said", "says", "saying",
+    "absolutely", "literally", "really", "basically", "actually", "probably", "maybe",
+    "came", "come", "coming", "went", "going", "gets", "got", "getting", "made", "make",
+    "thought", "think", "thinking", "knew", "know", "knows", "wanted", "wants", "want",
+    "told", "tell", "telling", "heard", "hear", "seeing", "seen", "saw", "just", "very",
+    "agreed", "agree", "decided", "trying", "tried", "worked", "working", "understood",
+    "proved", "proven", "final", "entire",
+    "everyone", "someone", "something", "anything", "nothing", "everything", "people",
+}
+
+TITLE_TRAILING_WEAK = {
+    "a", "an", "the", "and", "but", "or", "because", "so", "to", "of", "for", "with",
+    "at", "in", "on", "from", "by", "that", "this", "these", "those", "who", "which",
 }
 
 
@@ -115,10 +134,17 @@ def _truncate_words(text: str, max_words: int, max_chars: int) -> str:
     cleaned = _clean(text).strip(" .,!?:;–—")
     words = cleaned.split()
     if len(words) > max_words:
-        cleaned = " ".join(words[:max_words]).rstrip(" ,.!?:;–—")
+        words = words[:max_words]
+        while len(words) > 3 and re.sub(r"[^A-Za-z']", "", words[-1]).lower() in TITLE_TRAILING_WEAK:
+            words.pop()
+        cleaned = " ".join(words).rstrip(" ,.!?:;–—")
     if len(cleaned) > max_chars:
         head = cleaned[:max_chars]
         cleaned = head.rsplit(" ", 1)[0].rstrip(" ,.!?:;–—") if " " in head else head.rstrip(" ,.!?:;–—")
+        words = cleaned.split()
+        while len(words) > 3 and re.sub(r"[^A-Za-z']", "", words[-1]).lower() in TITLE_TRAILING_WEAK:
+            words.pop()
+        cleaned = " ".join(words)
     return cleaned
 
 
@@ -178,7 +204,16 @@ def _supporting_sentence(text: str, core: str, local_context: str = "") -> str:
     sentences = _sentences(text)
     if len(sentences) < 2:
         return ""
-    candidates = [sentence for sentence in sentences if _clean(sentence).lower() != _clean(core).lower()]
+    core_tokens = set(_tokens(core))
+    candidates = []
+    for sentence in sentences:
+        if _clean(sentence).lower() == _clean(core).lower():
+            continue
+        sentence_tokens = set(_tokens(sentence))
+        overlap = len(core_tokens & sentence_tokens) / max(1, min(len(core_tokens), len(sentence_tokens))) if core_tokens and sentence_tokens else 0.0
+        if overlap >= 0.88:
+            continue
+        candidates.append(sentence)
     if not candidates:
         return ""
     topic_counts = _topic_counts(f"{text} {local_context}")
@@ -218,6 +253,65 @@ def _subject_label(subject_hint: str | None) -> str:
     return clean.split(",", 1)[0].strip()[:64]
 
 
+def _restore_trusted_term_case(text: str, subject_hint: str | None) -> str:
+    """Restore the exact casing of a user-supplied show/program/subject label.
+
+    This is deliberately conservative: M5 never guesses a name from a filename or
+    outside knowledge. It only fixes casing when the trusted label already appears in
+    the generated text case-insensitively.
+    """
+    subject = _subject_label(subject_hint)
+    cleaned = _clean(text)
+    if not subject or not cleaned:
+        return cleaned
+    return re.sub(re.escape(subject), lambda _match: subject, cleaned, flags=re.I)
+
+
+def _compress_title_headline(headline: str, context: str = "") -> str:
+    """Prefer a complete, meaningful clause over a blindly truncated sentence."""
+    clean = _clean(headline).strip(" ,;:–—")
+    if len(clean.split()) <= 11 and len(clean) <= 72:
+        return clean
+    pieces = [
+        piece.strip(" ,;:–—")
+        for piece in re.split(r"(?:[,;]|[–—]|\b(?:but|however|until|instead|yet|then)\b)", clean, flags=re.I)
+        if piece.strip(" ,;:–—")
+    ]
+    candidates: list[tuple[float, int, str]] = []
+    topic_counts = _topic_counts(f"{headline} {context}")
+    for index, piece in enumerate(pieces):
+        words = piece.split()
+        if not 4 <= len(words) <= 20:
+            continue
+        tail = re.sub(r"[^A-Za-z']", "", words[-1]).lower()
+        if tail in TITLE_TRAILING_WEAK:
+            continue
+        score = _sentence_score(piece, index, len(pieces), topic_counts)
+        if any(cue.strip() in piece.lower() for cue in PAYOFF_CUES):
+            score += 3
+        candidates.append((score, -index, piece))
+    if candidates:
+        return max(candidates)[2]
+    return clean
+
+
+def _truncate_title(text: str, max_words: int, max_chars: int) -> str:
+    """Make a title-shaped phrase without leaving a dangling connector."""
+    clean = _clean(text).strip(" .,!?:;–—")
+    if len(clean.split()) <= max_words and len(clean) <= max_chars:
+        return clean
+    words = clean.split()
+    kept: list[str] = []
+    for word in words:
+        candidate = " ".join([*kept, word])
+        if kept and (len(kept) >= max_words or len(candidate) > max_chars):
+            break
+        kept.append(word)
+    while len(kept) > 3 and re.sub(r"[^A-Za-z']", "", kept[-1]).lower() in TITLE_TRAILING_WEAK:
+        kept.pop()
+    return " ".join(kept).rstrip(" ,.!?:;–—")
+
+
 def _headline_from_sentence(core: str) -> str:
     headline = _strip_filler_start(core).strip(" \"“”'")
     headline = re.sub(r"^(?:here(?:'s| is)\s+)(?:the\s+)?", "", headline, flags=re.I)
@@ -225,20 +319,27 @@ def _headline_from_sentence(core: str) -> str:
     transformations = (
         (r"^the biggest mistake i (?:made|make) (?:was|is)\s+", "My Biggest Mistake: "),
         (r"^the biggest mistake (?:was|is)\s+", "The Biggest Mistake: "),
-        (r"^the problem (?:was|is)\s+", "The Problem: "),
-        (r"^the truth (?:was|is)\s+", "The Truth: "),
-        (r"^the reason (?:was|is)\s+", "The Real Reason: "),
-        (r"^the secret (?:was|is)\s+", "The Secret: "),
+        (r"^the problem (?:was|is)\s+", ""),
+        (r"^the truth (?:was|is)\s+", ""),
+        (r"^the reason (?:was|is)\s+", ""),
+        (r"^the secret (?:was|is)\s+", ""),
         (r"^i was wrong about\s+", "I Was Wrong About "),
         (r"^i learned (?:that\s+)?", "What I Learned: "),
         (r"^i realised (?:that\s+)?", "What I Realised: "),
         (r"^i realized (?:that\s+)?", "What I Realized: "),
-        (r"^turns out(?: that)?\s+", "The Truth: "),
-        (r"^it turns out(?: that)?\s+", "The Truth: "),
+        (r"^turns out(?: that)?\s+", ""),
+        (r"^it turns out(?: that)?\s+", ""),
     )
     for pattern, replacement in transformations:
         if re.search(pattern, headline, flags=re.I):
             return re.sub(pattern, replacement, headline, count=1, flags=re.I)
+
+    causal_action = re.match(
+        r"^(?:i|we|they|he|she)\s+(?:came|went|stayed|left|did|did it|returned).{0,42}?\s+because\s+(.+)$",
+        headline, flags=re.I,
+    )
+    if causal_action and len(causal_action.group(1).split()) >= 3:
+        return causal_action.group(1).strip(" ,.-")
 
     # "X is because Y" is usually more useful as a compact Why headline than raw dialogue.
     because = re.match(r"^(.{8,70}?)\s+(?:is|was|happened)\s+because\s+(.+)$", headline, flags=re.I)
@@ -255,11 +356,11 @@ def _headline_from_sentence(core: str) -> str:
 def _make_title(text: str, style: TitleStyle, *, local_context: str = "", subject_hint: str | None = None,
                 content_type: str | None = None) -> str:
     core = _core_sentence(text, local_context)
-    headline = _headline_from_sentence(core)
+    headline = _compress_title_headline(_headline_from_sentence(core), local_context)
     subject = _subject_label(subject_hint)
 
     max_words, max_chars = (7, 52) if style == "cinematic" else (10, 66)
-    title = _truncate_words(headline, max_words, max_chars)
+    title = _truncate_title(headline, max_words, max_chars)
 
     effective = style
     if style == "auto":
@@ -278,6 +379,7 @@ def _make_title(text: str, style: TitleStyle, *, local_context: str = "", subjec
         if room >= 20 and subject.lower() not in title.lower():
             title = f"{subject}: {_truncate_words(title, 8, room)}"
 
+    title = _restore_trusted_term_case(title, subject_hint)
     return title[:78].rstrip(" ,;:–—") or "Strong moment"
 
 
@@ -292,10 +394,45 @@ def _similarity(left: str, right: str) -> float:
     a, b = set(_tokens(left)), set(_tokens(right))
     if not a or not b:
         return 0.0
-    return len(a & b) / max(1, min(len(a), len(b)))
+    return len(a & b) / max(1, len(a | b))
 
 
-def _make_description(text: str, title: str, style: TitleStyle, *, local_context: str = "") -> str:
+_DESCRIPTION_TRAILING_WEAK = TITLE_TRAILING_WEAK | {
+    "i", "we", "you", "he", "she", "they", "it", "is", "was", "are", "were",
+    "be", "been", "have", "has", "had", "do", "did", "can", "could", "would",
+    "should", "will", "might", "must", "my", "your", "his", "her", "their",
+}
+
+
+def _description_fragment(text: str, max_words: int, max_chars: int) -> str:
+    """Shorten a source sentence at a natural clause edge instead of mid-thought."""
+    clean = _clean(text).strip(' "“”')
+    if len(clean.split()) <= max_words and len(clean) <= max_chars:
+        return clean
+    # First prefer a real punctuation boundary that fits. This avoids output such as
+    # "...the design was wrong and we." when the source sentence is long.
+    boundaries = [m.end() for m in re.finditer(r"[,;:–—]", clean)]
+    fitting = [pos for pos in boundaries if 28 <= pos <= max_chars and len(clean[:pos].split()) <= max_words]
+    if fitting:
+        cut = clean[:max(fitting)].rstrip(" ,;:–—")
+        if len(cut.split()) >= 5:
+            return cut
+    words = clean.split()
+    kept: list[str] = []
+    for word in words:
+        candidate = " ".join([*kept, word])
+        if kept and (len(kept) >= max_words or len(candidate) > max_chars):
+            break
+        kept.append(word)
+    while len(kept) > 4 and re.sub(r"[^A-Za-z']", "", kept[-1]).lower() in _DESCRIPTION_TRAILING_WEAK:
+        kept.pop()
+    return " ".join(kept).rstrip(" ,;:–—")
+
+
+def _make_description(
+    text: str, title: str, style: TitleStyle, *, local_context: str = "",
+    content_type: str | None = None, subject_hint: str | None = None
+) -> str:
     core = _core_sentence(text, local_context)
     support = _supporting_sentence(text, core, local_context)
     candidates = [_strip_filler_start(core)]
@@ -304,17 +441,25 @@ def _make_description(text: str, title: str, style: TitleStyle, *, local_context
 
     # Prefer a sentence that adds information rather than just restating the headline.
     ordered = sorted(candidates, key=lambda value: (_similarity(value, title), -len(value)))
-    first = _truncate_words(ordered[0], 23, 150)
+    first = _description_fragment(ordered[0], 23, 150)
     second = ""
     if len(ordered) > 1 and _similarity(ordered[1], first) < 0.78:
-        second = _truncate_words(ordered[1], 20, 125)
+        second = _description_fragment(ordered[1], 20, 125)
 
-    if style == "cinematic":
-        return _ensure_terminal(_sentence_case(first))
+    content = (content_type or "other").lower().strip()
+    # Film/anime social copy stays restrained and scene-grounded. Avoid canned
+    # summaries; preserve trusted subject casing only when that label is actually said.
+    if style == "cinematic" or content in {"anime", "film-tv"}:
+        value = _ensure_terminal(_sentence_case(_description_fragment(first, 22, 150)))
+        return _restore_trusted_term_case(value, subject_hint)
+    if content == "meme-comedy":
+        value = _ensure_terminal(_sentence_case(_description_fragment(first, 18, 120)))
+        return _restore_trusted_term_case(value, subject_hint)
     description = _ensure_terminal(_sentence_case(first))
-    if second:
+    if second and content in {"podcast", "documentary", "other", "gameplay"}:
         description = f"{description} {_ensure_terminal(_sentence_case(second))}"
-    return _ensure_terminal(_truncate_words(description, 38 if style == "viral" else 42, 260))
+    value = _ensure_terminal(_truncate_words(description, 36 if style == "viral" else 40, 240))
+    return _restore_trusted_term_case(value, subject_hint)
 
 
 def _hashtag(value: str) -> str:
@@ -332,7 +477,7 @@ def _specific_topics(text: str, local_context: str, subject_hint: str | None, ti
     title_tokens = set(_tokens(title))
     scores: list[tuple[float, str]] = []
     for token, count in counts.items():
-        if token in subject_tokens or token.isdigit() or len(token) < 5 or token in HIGH_INTEREST:
+        if token in subject_tokens or token.isdigit() or len(token) < 5 or token in HIGH_INTEREST or token in WEAK_TAG_WORDS:
             continue
         score = count * 2.0 + min(2, local_counts.get(token, 0)) * 0.45
         if token in title_tokens:
@@ -356,9 +501,6 @@ def _make_hashtags(text: str, *, local_context: str = "", subject_hint: str | No
         tags.append(_hashtag(MOMENT_TAGS[moment_type]))
     for token in _specific_topics(text, local_context, subject_hint, title):
         tags.append(_hashtag(token))
-    # Shorts is useful across the supported vertical destinations, but don't crowd out
-    # meaningful tags when the list is already full.
-    tags.append("#Shorts")
     clean: list[str] = []
     seen: set[str] = set()
     for tag in tags:
@@ -366,7 +508,7 @@ def _make_hashtags(text: str, *, local_context: str = "", subject_hint: str | No
         if tag and key not in seen:
             clean.append(tag)
             seen.add(key)
-        if len(clean) >= 7:
+        if len(clean) >= 5:
             break
     return tuple(clean)
 
@@ -406,10 +548,20 @@ def generate_clip_copy_local(
     normalized: TitleStyle = style if style in {"auto", "viral", "clean", "cinematic"} else "auto"
     clip_text = _clean(text)
     nearby = _clean(local_context)
+    content = (content_type or "other").lower().strip()
+    # Auto metadata should match the medium. Film/anime titles are restrained by default;
+    # meme/comedy is punchier; the other categories keep the existing adaptive choice.
+    effective_style: TitleStyle = normalized
+    if normalized == "auto" and content in {"anime", "film-tv"}:
+        effective_style = "cinematic"
+    elif normalized == "auto" and content == "meme-comedy":
+        effective_style = "viral"
     title = _make_title(
-        clip_text, normalized, local_context=nearby, subject_hint=subject_hint, content_type=content_type,
+        clip_text, effective_style, local_context=nearby, subject_hint=subject_hint, content_type=content_type,
     )
-    description = _make_description(clip_text, title, normalized, local_context=nearby)
+    description = _make_description(
+        clip_text, title, effective_style, local_context=nearby, content_type=content_type, subject_hint=subject_hint
+    )
     hashtags = _make_hashtags(
         clip_text, local_context=nearby, subject_hint=subject_hint, content_type=content_type, moment_type=moment_type, title=title,
     )

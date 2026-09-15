@@ -134,6 +134,21 @@ def cut_clip(
     return str(target)
 
 
+def is_memory_allocation_error(exc: BaseException | str) -> bool:
+    """Return True for allocator failures reported by x264/FFmpeg/MKL/NumPy."""
+    text = str(exc).lower()
+    markers = (
+        "malloc",
+        "out of memory",
+        "cannot allocate memory",
+        "failed to allocate",
+        "allocation failed",
+        "mkl_malloc",
+        "bad_alloc",
+    )
+    return any(marker in text for marker in markers)
+
+
 def render_adaptive_short(
     media_path: str,
     output_path: str,
@@ -146,6 +161,8 @@ def render_adaptive_short(
     frame_size: str = "balanced",
     width: int = 720,
     height: int = 1280,
+    encoder_preset: str = "veryfast",
+    encoder_threads: int | None = None,
     cancel_event: threading.Event | None = None,
 ) -> str:
     """Create a 9:16 MP4 with a subject-aware content window and in-frame captions."""
@@ -218,8 +235,13 @@ def render_adaptive_short(
         "-ss", f"{start:.3f}", "-i", str(source.resolve()),
         "-t", f"{duration:.3f}", "-filter_complex", graph,
         "-map", "[v]", "-map", "0:a?",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k",
+        "-c:v", "libx264", "-preset", encoder_preset, "-crf", "23",
+        "-pix_fmt", "yuv420p",
+    ]
+    if encoder_threads is not None:
+        command += ["-threads", str(max(1, int(encoder_threads)))]
+    command += [
+        "-c:a", "aac", "-b:a", "128k",
         "-movflags", "+faststart", target.name,
     ]
     _run_render(command, target, f"render the {layout_mode} short", cwd=target.parent, cancel_event=cancel_event)

@@ -41,6 +41,12 @@ def migrate_project(data: dict, job_id: str | None = None) -> dict:
     migrated.setdefault("transcript_revision", 0)
     migrated.setdefault("audio_track", 0)
     migrated.setdefault("performance", {})
+    migrated.setdefault("transcription_version", "")
+    migrated.setdefault("transcript_language", "unknown")
+    migrated.setdefault("language_confidence", 0.0)
+    migrated.setdefault("translated_to_english", False)
+    migrated.setdefault("transcript_quality", {})
+    migrated.setdefault("transcript_refined_chunks", 0)
     migrated["schema_version"] = PROJECT_SCHEMA_VERSION
     return migrated
 

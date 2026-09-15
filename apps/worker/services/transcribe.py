@@ -1,4 +1,9 @@
+from __future__ import annotations
+
 from functools import lru_cache
+import inspect
+import re
+from statistics import mean
 
 from models import TranscriptSegment, TranscriptWord
 
@@ -21,10 +26,61 @@ def _load_local_model(model_name: str, device: str, compute_type: str, cpu_threa
     )
 
 
+
+
+def clear_local_model_cache() -> None:
+    """Release the cached CTranslate2 Whisper model before a lower-memory retry.
+
+    The cache intentionally holds only one model, but on Windows a failed MKL/CTranslate2
+    allocation can leave the current model as the largest live object. Clearing the cache
+    before retrying with a smaller model gives the allocator the best chance to recover.
+    """
+    _load_local_model.cache_clear()
+
 def _normalise_word_text(value: str) -> str:
     # faster-whisper commonly returns a leading space on each word. Keeping punctuation
-    # but removing the transport whitespace makes phrase assembly predictable.
+    # but removing transport whitespace makes phrase assembly predictable.
     return (value or "").strip()
+
+
+def _model_transcribe(
+    audio_path: str,
+    *,
+    model_name: str,
+    device: str,
+    compute_type: str,
+    cpu_threads: int,
+    vad_filter: bool,
+    beam_size: int,
+    language: str | None,
+    task: str,
+    initial_prompt: str | None,
+    hotwords: str | None,
+    condition_on_previous_text: bool,
+):
+    model = _load_local_model(model_name, device, compute_type, cpu_threads)
+    kwargs = dict(
+        beam_size=max(1, int(beam_size)),
+        vad_filter=vad_filter,
+        condition_on_previous_text=condition_on_previous_text,
+        word_timestamps=True,
+        task=task,
+    )
+    if language:
+        kwargs["language"] = language
+    if initial_prompt:
+        kwargs["initial_prompt"] = initial_prompt[:220]
+    # faster-whisper 1.2+ supports hotwords, but Clip AI may be running against an
+    # older compatible build on an existing Windows install. Add them only when the
+    # loaded model exposes the parameter so M5 improves proper names without turning
+    # a library mismatch into a failed analysis.
+    if hotwords:
+        try:
+            if "hotwords" in inspect.signature(model.transcribe).parameters:
+                kwargs["hotwords"] = hotwords[:220]
+        except (TypeError, ValueError):
+            pass
+    return model.transcribe(audio_path, **kwargs)
 
 
 def transcribe_local_with_timestamps(
@@ -35,20 +91,32 @@ def transcribe_local_with_timestamps(
     offset_seconds: float = 0.0,
     vad_filter: bool = True,
     cpu_threads: int = 4,
+    *,
+    language: str | None = None,
+    task: str = "transcribe",
+    initial_prompt: str | None = None,
+    hotwords: str | None = None,
+    beam_size: int = 1,
+    condition_on_previous_text: bool = True,
 ) -> list[TranscriptSegment]:
     """Transcribe locally with segment + word-level timestamps.
 
-    Word timing costs a little more CPU than segment-only transcription, but it lets
-    rendered captions follow the speech instead of evenly guessing timing across a
-    sentence. CPU + int8 remains the safest Windows default for the development PC.
+    Caption words come directly from Whisper rather than being rewritten by the copy
+    generator. Clip AI's local speech pipeline is intentionally English-only.
     """
-    model = _load_local_model(model_name, device, compute_type, cpu_threads)
-    raw_segments, _info = model.transcribe(
+    raw_segments, _info = _model_transcribe(
         audio_path,
-        beam_size=1,
+        model_name=model_name,
+        device=device,
+        compute_type=compute_type,
+        cpu_threads=cpu_threads,
         vad_filter=vad_filter,
-        condition_on_previous_text=True,
-        word_timestamps=True,
+        beam_size=beam_size,
+        language=language,
+        task=task,
+        initial_prompt=initial_prompt,
+        hotwords=hotwords,
+        condition_on_previous_text=condition_on_previous_text,
     )
 
     segments: list[TranscriptSegment] = []
@@ -84,6 +152,115 @@ def transcribe_local_with_timestamps(
         )
     return segments
 
+
+def transcript_quality(segments: list[TranscriptSegment]) -> dict[str, float | int | bool]:
+    """Estimate whether a chunk deserves a slower accuracy rescue pass.
+
+    A chunk can look fine on average while one important sentence is wrong. v23.4
+    therefore tracks both whole-chunk confidence and the weakest real sentence.
+    """
+    probabilities: list[float] = []
+    tokens: list[str] = []
+    segment_count = 0
+    weak_segments = 0
+    segment_averages: list[float] = []
+    for segment in segments:
+        if not (segment.text or "").strip():
+            continue
+        segment_count += 1
+        local_probs: list[float] = []
+        local_tokens = 0
+        for word in segment.words:
+            clean = re.sub(r"[^\w']+", "", word.text.lower(), flags=re.UNICODE)
+            if clean:
+                tokens.append(clean)
+                local_tokens += 1
+            if word.probability is not None:
+                value = float(word.probability)
+                probabilities.append(value)
+                local_probs.append(value)
+        if local_probs and local_tokens >= 3:
+            seg_avg = mean(local_probs)
+            segment_averages.append(seg_avg)
+            if seg_avg < 0.56 or (sum(1 for value in local_probs if value < 0.38) / len(local_probs)) > 0.28:
+                weak_segments += 1
+
+    avg_probability = mean(probabilities) if probabilities else (0.74 if segment_count else 0.0)
+    low_ratio = (
+        sum(1 for value in probabilities if value < 0.48) / len(probabilities)
+        if probabilities else (0.0 if segment_count else 1.0)
+    )
+    very_low_ratio = (
+        sum(1 for value in probabilities if value < 0.25) / len(probabilities)
+        if probabilities else (0.0 if segment_count else 1.0)
+    )
+    weakest_segment = min(segment_averages) if segment_averages else avg_probability
+
+    repeated = 0
+    for size in (2, 3, 4):
+        if len(tokens) < size * 2:
+            continue
+        for index in range(size, len(tokens) - size + 1):
+            if tokens[index - size:index] == tokens[index:index + size]:
+                repeated += 1
+    repeat_ratio = repeated / max(1, len(tokens))
+
+    score = avg_probability * 100.0
+    score -= low_ratio * 24.0
+    score -= very_low_ratio * 26.0
+    score -= min(18.0, repeat_ratio * 120.0)
+    score -= min(12.0, weak_segments * 2.5)
+    if segment_count == 0:
+        score = 0.0
+    score = max(0.0, min(100.0, score))
+    needs_refinement = bool(
+        segment_count
+        and (
+            avg_probability < 0.72
+            or low_ratio > 0.18
+            or very_low_ratio > 0.07
+            or repeat_ratio > 0.035
+            or weakest_segment < 0.50
+            or weak_segments >= 2
+        )
+    )
+    return {
+        "score": round(score, 2),
+        "average_word_probability": round(avg_probability, 4),
+        "weakest_segment_probability": round(weakest_segment, 4),
+        "weak_segment_count": weak_segments,
+        "low_confidence_ratio": round(low_ratio, 4),
+        "very_low_confidence_ratio": round(very_low_ratio, 4),
+        "repeat_ratio": round(repeat_ratio, 4),
+        "word_count": len(tokens),
+        "segment_count": segment_count,
+        "needs_refinement": needs_refinement,
+    }
+
+def choose_better_transcript(
+    first: list[TranscriptSegment], second: list[TranscriptSegment]
+) -> tuple[list[TranscriptSegment], dict[str, float | int | bool], bool]:
+    first_quality = transcript_quality(first)
+    second_quality = transcript_quality(second)
+    first_score = float(first_quality["score"])
+    second_score = float(second_quality["score"])
+    first_low = float(first_quality["low_confidence_ratio"])
+    second_low = float(second_quality["low_confidence_ratio"])
+    first_weak = float(first_quality["weakest_segment_probability"])
+    second_weak = float(second_quality["weakest_segment_probability"])
+    # Accept a rescue pass when it clearly improves either the overall transcript or
+    # the weakest sentence. This catches isolated wrong lines hidden by a good average.
+    use_second = bool(
+        second
+        and (
+            not first
+            or second_score >= first_score + 1.5
+            or second_low <= first_low - 0.04
+            or (second_weak >= first_weak + 0.10 and second_score >= first_score - 5.0)
+        )
+    )
+    chosen = second if use_second else first
+    return chosen, (second_quality if use_second else first_quality), use_second
 
 def transcribe_openai_with_timestamps(
     audio_path: str,

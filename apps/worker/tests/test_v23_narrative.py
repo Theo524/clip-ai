@@ -16,7 +16,7 @@ def context(segments, content_type="anime"):
 
 
 def test_v23_ranking_checkpoint_version_changes():
-    assert RANKING_VERSION == "v23-quality-v3"
+    assert RANKING_VERSION == "v23-quality-v4-m5"
 
 
 def test_question_is_not_cut_before_immediate_answer_and_consequence():

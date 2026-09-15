@@ -1,4 +1,74 @@
+# v23 M5 — Final Quality Pass
+
+- Keeps local speech English-only; Japanese/multilingual detection and translation remain removed.
+- Adds optional faster-whisper hotword vocabulary derived only from the explicit Show/program/subject hint.
+- Uses a slightly stronger Balanced English beam while preserving base.en, confidence rescue and low-memory fallback.
+- Bumps the transcription strategy/cache version so M4.4 transcripts refresh once under the M5 speech path.
+- Adds intentional balanced Clean/Cinematic caption line breaks without changing spoken wording.
+- Improves title extraction so long dialogue is reduced to a meaningful clause before length trimming.
+- Improves description shortening so copy stops at natural clause edges instead of mid-thought.
+- Restores trusted subject/show casing consistently in generated metadata and keeps the no-invented-names rule.
+- Filters more generic conversational verbs/adjectives from free-form hashtags.
+- Makes strong immediate reactions mandatory continuation even after a spoken closure, reducing setup/payoff/reaction cuts.
+- Adds `boundary_repair_cost` to internal candidate quality and penalizes warning-heavy boundaries more directly.
+- Preserves all M4.4 long-video and render-memory safeguards.
+- Preserves Anime Auto exactly: black 9:16 canvas, Compact central picture, Cinematic captions low inside the picture, calmer tracking.
+- Regression suite: **135 passed, 0 failed**.
+
+# v23 M4.4 — English-only speech rollback
+
+- Removed experimental automatic language detection and Japanese/multilingual translation after real-world testing.
+- Local transcription is English-only again; no multilingual Whisper models are loaded or downloaded.
+- Dual-audio media still automatically prefers a clearly-labelled English dub.
+- Clearly-labelled non-English-only audio now returns a clear English-dub/source message instead of misleading captions.
+- Kept the stronger English transcript rescue, copy quality, long-video memory safety, and render-memory hotfixes.
+
+# Changelog
+
+## v23 M4.3 - Render Memory Safety Hotfix
+
+- Releases the cached local Whisper/CTranslate2 model before Short encoding so FFmpeg/x264 has more RAM available on 8 GB Windows machines.
+- Detects x264/FFmpeg allocator failures such as `malloc ... failed` and retries the same render automatically with a single-thread, ultrafast low-memory encoder configuration.
+- Keeps the same 720x1280 final canvas, framing, captions, timing, metadata, and clip selection; the fallback changes encoder memory usage rather than content.
+- Hardens the Windows updater with a larger Node build heap and a Webpack fallback if Turbopack cannot complete the production build.
+- Regression suite: 125 tests passing.
+
+# v23 M4.2 — Long-video memory hotfix
+
+- Recognizes Windows/Intel MKL `mkl_malloc: failed to allocate memory` as a recoverable memory-pressure error.
+- On multilingual OOM, retries the failing chunk with the lower-memory multilingual Whisper model before splitting audio further.
+- Clears the cached Whisper model before lower-memory retry to release RAM sooner.
+- Uses smaller speech chunks automatically for roughly 45+ minute sources, without adding another UI control.
+- If language probing runs out of RAM, falls back to unknown/multilingual handling instead of incorrectly forcing English.
+- Keeps M4.1 speech/copy quality behavior and all visual presets unchanged.
+
+# Clip AI v23 M4.1
+
+- Fixed Windows regression tests where mocked audio chunk paths intentionally do not create a real MP3 file.
+- Language detection now treats probing as optional and lets the real transcription path own file/extraction errors.
+- No changes to Japanese handling, caption quality, anime framing, or metadata behavior.
+
 # Clip AI changelog
+
+## 23.0.0-beta.5 · Speech & Copy Quality Pass
+
+- Adds automatic spoken-language handling with no new public language selector.
+- Automatically prefers a clearly labelled English audio track on dual-audio media; otherwise uses the default track and translates non-English speech when needed.
+- Uses a lightweight multilingual language probe when stream metadata is inconclusive.
+- Adds Japanese/other-language → English local transcription using multilingual Whisper (`small` on Balanced, `base` on Low memory).
+- Balanced English transcription now uses `base.en`; Fast/Low-memory retain the fast first pass and automatically rescue uncertain chunks with the stronger model.
+- Adds transcript-quality scoring using word confidence, repeated-token detection and weakest-sentence confidence.
+- Runs a focused second transcription pass only when a chunk looks unreliable, then keeps whichever transcript scores better.
+- Uses the explicit Show/program/subject hint as light Whisper vocabulary context to improve programme names without trusting arbitrary filenames.
+- Keeps rendered captions quote-faithful to the transcript; copy generation never rewrites spoken captions.
+- Manual transcript corrections now preserve original speech timing where possible instead of redistributing every corrected word evenly across the whole clip.
+- Makes Anime/Film Auto social copy more restrained and scene-grounded.
+- Caps hashtags at five and removes filler tags such as `#Shorts`, `#AnimeClips`, `#PodcastClips` and `#LearnSomething`.
+- Removes several canned `The Truth:` / `The Secret:` title prefixes and prevents truncated titles from ending on weak connector words.
+- Adds compact transcript language/quality information to saved Project cards without adding creation settings.
+- Old transcripts are versioned; the first reopen/re-analysis under this quality pass creates a fresh transcript instead of silently reusing older tiny.en output.
+- Preserves v23 M1-M3 ranking/boundary behavior and the established Anime Auto framing/caption layout.
+- Backend regression suite: **121 passed, 0 failed**.
 
 ## 23.0.0-beta.4 · Quality Pass · Stable Candidate
 

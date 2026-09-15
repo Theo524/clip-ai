@@ -21,7 +21,7 @@ DURATION_GUIDES = {
     "podcast": (20, 60), "documentary": (25, 75), "gameplay": (15, 50),
     "other": (12, 60),
 }
-RANKING_VERSION = "v23-quality-v3"
+RANKING_VERSION = "v23-quality-v4-m5"
 
 
 NARRATIVE_CLOSURE_CUES = tuple(dict.fromkeys((*PAYOFF_PHRASES,
@@ -255,6 +255,39 @@ def _short_reaction(text: str) -> bool:
     return _starts_with_any(clean, REACTION_STARTS) or clean in {"yes", "no", "yeah", "wow", "whoa"}
 
 
+def _strong_reaction(text: str) -> bool:
+    clean = _clean(text).lower().lstrip('"“‘')
+    words = _words(clean)
+    if not words or len(words) > 14:
+        return False
+    return (
+        _starts_with_any(clean, REACTION_STARTS)
+        or "!" in text
+        or "?" in text
+        or any(phrase in clean for phrase in ("no way", "oh my", "can't believe", "cannot believe", "you're kidding", "you are kidding"))
+    )
+
+
+def _boundary_repair_cost(warnings: list[str]) -> int:
+    """Estimate how much manual trimming/context repair a candidate would need."""
+    weights = {
+        "Sentence or thought is unfinished": 20,
+        "Question is answered immediately after the cut": 18,
+        "Setup or story turn has not paid off yet": 18,
+        "The next line contains the immediate payoff": 16,
+        "Immediate reaction belongs with this moment": 14,
+        "Starts like a reply without the setup": 14,
+        "Answer needs the preceding question": 14,
+        "Opening depends on earlier context": 11,
+        "Opening is grammatically dependent": 10,
+        "Ending boundary is uncertain": 8,
+        "Extra dialogue continues after the main payoff": 7,
+        "Dialogue appears to continue immediately": 7,
+        "Low transcript confidence": 6,
+    }
+    return min(35, sum(weights.get(warning, 3) for warning in set(warnings)))
+
+
 def _boundary_confidence(segments: list[TranscriptSegment], start_index: int, end_index: int, scene: Scene,
                          narrative: int, continuation: int) -> int:
     start_seg = segments[start_index]
@@ -323,10 +356,14 @@ def _narrative_assessment(segments: list[TranscriptSegment], start_index: int, e
         score -= 26 if continuation == 2 else 12
         warnings.append("The next line contains the immediate payoff")
     elif following and gap_after < 1.15 and _short_reaction(following.text):
-        # A short reaction often *is* the payoff in anime/film/comedy. Do not cut
-        # immediately before it unless the current candidate already closes strongly.
-        continuation = 1 if _has_closure(text[-220:]) else 2
-        score -= 11 if continuation == 1 else 24
+        # Strong emotional/comedic reactions are part of the moment even when the
+        # spoken setup technically reached a sentence-ending payoff. M5 therefore
+        # keeps extending through an immediate strong reaction instead of rewarding
+        # a cleaner-looking but emotionally clipped boundary. Tiny acknowledgements
+        # such as "yeah" remain a softer continuation.
+        strong = _strong_reaction(following.text)
+        continuation = 2 if strong or not _has_closure(text[-220:]) else 1
+        score -= 26 if continuation == 2 else 11
         warnings.append("Immediate reaction belongs with this moment")
     elif following and gap_after < .9 and semantic_follow >= .45 and not _has_closure(text[-180:]):
         continuation = 2
@@ -434,8 +471,9 @@ def _candidate_text_similarity(left: str, right: str) -> float:
 def _selection_quality(clip: ClipCandidate) -> int:
     narrative = int((clip.context or {}).get("narrative_completeness") or 0)
     boundary = int((clip.context or {}).get("boundary_confidence") or 0)
-    warnings = len((clip.context or {}).get("quality_warnings") or [])
-    return max(1, min(99, round(clip.score * .62 + narrative * .24 + boundary * .14 - warnings * 2.5)))
+    warnings = list((clip.context or {}).get("quality_warnings") or [])
+    repair_cost = int((clip.context or {}).get("boundary_repair_cost") or _boundary_repair_cost(warnings))
+    return max(1, min(99, round(clip.score * .62 + narrative * .24 + boundary * .14 - repair_cost * .38)))
 
 
 def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
@@ -551,6 +589,8 @@ def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
                     if cuts >= 5 and cuts / max(duration, 1) > .38:
                         warnings.append("Frequent shot changes: review framing")
                         score -= 4
+                repair_cost = _boundary_repair_cost(warnings)
+                score -= repair_cost * 0.18
                 clip = ClipCandidate(
                     start=round(max(scene_start, start_seg.start - .12), 2),
                     end=round(min(scene_end + .16, end_seg.end + .16), 2),
@@ -565,6 +605,7 @@ def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
                              "narrative_completeness": narrative,
                              "narrative_continuation": continuation_level,
                              "boundary_confidence": boundary_confidence,
+                             "boundary_repair_cost": repair_cost,
                              "transcript_confidence": round(confidence, 3) if confidence is not None else None},
                 )
                 clip.context["selection_quality"] = _selection_quality(clip)

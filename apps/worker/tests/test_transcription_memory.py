@@ -61,3 +61,39 @@ def test_memory_safe_transcription_does_not_hide_other_errors(tmp_path, monkeypa
         assert "unsupported codec" in str(exc)
     else:
         raise AssertionError("Non-memory failures must not be swallowed")
+
+
+def test_mkl_malloc_allocation_error_is_recognized():
+    assert main._is_memory_allocation_error(RuntimeError("mkl_malloc: failed to allocate memory"))
+
+
+def test_stronger_english_model_falls_back_on_mkl_oom(tmp_path, monkeypatch):
+    source = tmp_path / "english_chunk.mp3"
+    source.write_bytes(b"audio")
+    monkeypatch.setattr(main.settings, "transcription_backend", "local")
+    monkeypatch.setattr(main.settings, "local_whisper_refine_model", "base.en")
+    monkeypatch.setattr(main.settings, "local_whisper_model", "tiny.en")
+
+    calls = []
+    def fake_transcribe(path, offset_seconds=0.0, *, vad_filter=True, cpu_threads=None, options=None):
+        model = (options or {}).get("model_name")
+        calls.append((model, cpu_threads))
+        if model == "base.en":
+            raise RuntimeError("mkl_malloc: failed to allocate memory")
+        return [TranscriptSegment(start=offset_seconds, end=offset_seconds + 2, text="Recovered English speech.")]
+
+    monkeypatch.setattr(main, "_transcribe_chunk", fake_transcribe)
+    import services.transcribe as transcribe_service
+    monkeypatch.setattr(transcribe_service, "clear_local_model_cache", lambda: None)
+
+    result = main._transcribe_chunk_memory_safe(
+        str(source),
+        0.0,
+        vad_filter=True,
+        cpu_threads=4,
+        options={"model_name": "base.en", "task": "transcribe", "language": "en", "beam_size": 2},
+    )
+    assert result and result[0].text == "Recovered English speech."
+    assert calls[0][0] == "base.en"
+    assert calls[1][0] == "tiny.en"
+    assert calls[1][1] <= 2
