@@ -52,3 +52,14 @@ Use this before calling M6 stable on Windows.
 - [ ] Complete short comedy/punchline clips are not padded.
 - [ ] Compilation candidates never cross into the next detected scene/topic.
 - [ ] “Why this clip?” shows a Narrative score.
+
+
+## v23 M3 quality pass
+
+- [ ] Anime: Best 3 are not tiny contextless fragments; short clips are only short when complete.
+- [ ] Documentary: an explanation can run longer when the conclusion genuinely needs it.
+- [ ] Comedy: a complete short punchline is still allowed to stay short.
+- [ ] Compilation: Best 3 favour different scenes when comparable candidates exist.
+- [ ] Titles/descriptions/tags remain sensible and grounded.
+- [ ] Anime Auto still uses black canvas + Compact central picture + low Cinematic captions.
+- [ ] `npm run build` succeeds with the pinned frontend versions.

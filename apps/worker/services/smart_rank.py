@@ -21,7 +21,7 @@ DURATION_GUIDES = {
     "podcast": (20, 60), "documentary": (25, 75), "gameplay": (15, 50),
     "other": (12, 60),
 }
-RANKING_VERSION = "v23-narrative-v2"
+RANKING_VERSION = "v23-quality-v3"
 
 
 NARRATIVE_CLOSURE_CUES = tuple(dict.fromkeys((*PAYOFF_PHRASES,
@@ -391,6 +391,53 @@ def _candidate_duration_cap(content_type: str, preference: str, high: int) -> fl
     return min(145.0, high + extra)
 
 
+def _short_candidate_is_complete_enough(
+    *,
+    content_type: str,
+    duration: float,
+    low: int,
+    narrative: int,
+    payoff: bool,
+    ending_quality: int,
+    continuation_level: int,
+    text: str,
+) -> bool:
+    """Allow genuinely short moments without letting fragmentary clips dominate.
+
+    Meme/comedy can naturally resolve in only a few seconds. Story-heavy media is
+    held to a higher bar when a candidate falls below its normal soft duration.
+    This is an admission gate, not a forced minimum length.
+    """
+    if duration >= low:
+        return True
+    if content_type == "meme-comedy":
+        return narrative >= 80 and ending_quality >= 1 and continuation_level == 0
+    word_count = len(_words(text))
+    return (
+        narrative >= 92
+        and payoff
+        and ending_quality >= 2
+        and continuation_level == 0
+        and word_count >= 12
+    )
+
+
+def _candidate_text_similarity(left: str, right: str) -> float:
+    """Topic overlap for Best-3 diversity, using the full candidate text."""
+    a = _topic_tokens(left)
+    b = _topic_tokens(right)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / max(1, min(len(a), len(b)))
+
+
+def _selection_quality(clip: ClipCandidate) -> int:
+    narrative = int((clip.context or {}).get("narrative_completeness") or 0)
+    boundary = int((clip.context or {}).get("boundary_confidence") or 0)
+    warnings = len((clip.context or {}).get("quality_warnings") or [])
+    return max(1, min(99, round(clip.score * .62 + narrative * .24 + boundary * .14 - warnings * 2.5)))
+
+
 def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
                             context: ContentContext, *, shot_boundaries: list[float] | tuple[float, ...] = (),
                             duration_preference: str = "auto") -> list[ClipCandidate]:
@@ -435,6 +482,17 @@ def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
                     text, duration, start_seg.text, end_seg.text, gap_before, gap_after)
                 complete_start = _starts_clean(start_seg.text) or start_index == scene.first
                 payoff = any(phrase in text.lower() for phrase in PAYOFF_PHRASES) or _has_closure(text)
+                if not _short_candidate_is_complete_enough(
+                    content_type=context.resolved_type,
+                    duration=duration,
+                    low=low,
+                    narrative=narrative,
+                    payoff=payoff,
+                    ending_quality=ending_quality,
+                    continuation_level=continuation_level,
+                    text=text,
+                ):
+                    continue
                 turn = any(phrase in text.lower() for phrase in PIVOT_PHRASES)
                 story = min(99, round(0.72 * narrative + 0.28 * (
                     40 + (18 if complete_start else 0) + 20 * ending_quality // 2
@@ -509,6 +567,7 @@ def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
                              "boundary_confidence": boundary_confidence,
                              "transcript_confidence": round(confidence, 3) if confidence is not None else None},
                 )
+                clip.context["selection_quality"] = _selection_quality(clip)
                 candidates.append((clip, scene_id, text))
     # If a short scene has no admissible range, return its best complete span.
     if not candidates:
@@ -530,35 +589,68 @@ def rank_clip_candidates_m2(segments: list[TranscriptSegment], max_clips: int,
                               context={"moment_type": _moment_type(text), "scene_id": scenes.index(scene),
                                        "scene_start": first_start, "scene_end": last.end,
                                        "quality_warnings": warning})]
-    # Score leads. When quality is effectively tied, choose the shorter complete
-    # window so extra dialogue is not kept merely because it exists.
+    # Score leads. When quality is effectively tied, choose the tighter complete
+    # edit and prefer candidates with fewer repair warnings.
     candidates.sort(
         key=lambda item: (
+            item[0].context.get("selection_quality", item[0].score),
             item[0].score,
             item[0].context.get("narrative_completeness", 0),
             item[0].context.get("boundary_confidence", 0),
+            -len(item[0].context.get("quality_warnings") or []),
             -(item[0].end - item[0].start),
         ),
         reverse=True,
     )
+
     selected: list[tuple[ClipCandidate, int, str]] = []
-    # First three favor distinct scenes when their quality is reasonably close.
-    diverse_scenes = {scene_id for clip, scene_id, _ in candidates if clip.score >= candidates[0][0].score - 15}
-    for clip, scene_id, text in candidates:
+    best_quality = int(candidates[0][0].context.get("selection_quality", candidates[0][0].score))
+    # For the Best 3, use different scenes/moment types when the alternatives are
+    # genuinely close in quality. This prevents three near-copies of one conversation.
+    close_candidates = [
+        item for item in candidates
+        if int(item[0].context.get("selection_quality", item[0].score)) >= best_quality - 14
+    ]
+    for clip, scene_id, text in close_candidates:
         if len(selected) >= min(3, max_clips):
             break
+        moment = (clip.context or {}).get("moment_type") or "unknown"
         chosen_scenes = {item[1] for item in selected}
-        if scene_id in chosen_scenes and diverse_scenes - chosen_scenes:
+        chosen_moments = {(item[0].context or {}).get("moment_type") or "unknown" for item in selected}
+        remaining_scenes = {item[1] for item in close_candidates} - chosen_scenes
+        remaining_moments = {((item[0].context or {}).get("moment_type") or "unknown") for item in close_candidates} - chosen_moments
+        if scene_id in chosen_scenes and remaining_scenes:
             continue
-        if not any(_too_similar(clip, item[0]) for item in selected):
-            selected.append((clip, scene_id, text))
+        if moment != "unknown" and moment in chosen_moments and remaining_moments - {"unknown"}:
+            continue
+        if any(
+            _too_similar(clip, existing[0])
+            or _candidate_text_similarity(text, existing[2]) >= .68
+            for existing in selected
+        ):
+            continue
+        selected.append((clip, scene_id, text))
+
+    # Fill any remaining slots from the global quality order. Very weak narrative
+    # candidates are skipped while stronger alternatives still exist.
     for clip, scene_id, text in candidates:
         if len(selected) >= max_clips:
             break
-        if any(_too_similar(clip, item[0]) or
-               (scene_id == item[1] and abs(clip.start - item[0].start) < 15) for item in selected):
+        narrative = int((clip.context or {}).get("narrative_completeness") or 0)
+        if narrative < 58 and any(
+            int((other[0].context or {}).get("narrative_completeness") or 0) >= 72
+            for other in candidates
+        ):
+            continue
+        if any(
+            _too_similar(clip, item[0])
+            or _candidate_text_similarity(text, item[2]) >= .74
+            or (scene_id == item[1] and abs(clip.start - item[0].start) < 15)
+            for item in selected
+        ):
             continue
         selected.append((clip, scene_id, text))
+
     for clip, _, text in selected:
         generated = generate_clip_copy_local(text, "auto")
         clip.title, clip.social_caption = generated.title, generated.social_caption

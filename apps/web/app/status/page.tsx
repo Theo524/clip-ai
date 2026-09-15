@@ -97,7 +97,7 @@ export default function StatusPage() {
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink activeNav" href="/status">System</a>
           <a className="navLink" href="/">Create</a>
-          <div className="badge">v22 · beta freeze</div>
+          <div className="badge">v23 · stable candidate</div>
         </div>
       </nav>
 
@@ -159,7 +159,7 @@ export default function StatusPage() {
 
             <section className="betaNotice">
               <strong>What “beta” means here</strong>
-              <p>v22 Beta Freeze keeps the classic anime cinematic window and adds dual-audio handling, safer cleanup, performance tracking and final regression hardening.</p>
+              <p>v23 Stable Candidate keeps the classic anime cinematic window and adds stricter narrative completeness, stronger Best 3 diversity and regression hardening.</p>
               <code>{data.work_dir}</code>
             </section>
           </>

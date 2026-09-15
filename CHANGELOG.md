@@ -1,3 +1,18 @@
+# Clip AI changelog
+
+## 23.0.0-beta.4 · Quality Pass · Stable Candidate
+
+- Tightens short-clip admission for story-heavy media: anime, film/TV, documentary and podcast clips can still be short, but sub-guide clips now need a very strong complete payoff instead of winning as fragments.
+- Keeps genuinely short meme/comedy punchlines eligible when they are actually complete.
+- Adds a composite internal `selection_quality` score that blends clip score, narrative completeness, boundary confidence and repair warnings.
+- Strengthens Best 3 diversity using full candidate topic overlap, scene diversity and moment-type diversity rather than relying only on timestamp overlap/opening words.
+- Skips warning-heavy/low-narrative candidates while stronger alternatives exist.
+- Pins Next.js/React/TypeScript dependency versions to the validated v23 stack so future `npm install` runs do not silently pull a new major release.
+- Updates public version labels from the old v22 freeze wording to the v23 Stable Candidate.
+- Preserves the simple create UI: Content type + Video structure + optional subject hint; Clip length and audio handling remain automatic.
+- Preserves Anime Auto exactly: black 9:16 canvas, Compact central picture, Cinematic captions locked low inside the picture, calmer tracking.
+- Backend regression suite: **112 passed, 0 failed**.
+
 # Changelog
 
 ## 23.0.0-beta.3 · M2 Boundary Refinement

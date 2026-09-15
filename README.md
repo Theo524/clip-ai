@@ -1,19 +1,23 @@
-# Clip AI v23 · Narrative Intelligence 2.0 (M2)
+# Clip AI v23 · Stable Candidate (M3)
 
-Clip AI turns long English-language videos into ranked, reframed, captioned vertical Shorts. v23 M1 keeps the stable v22 rendering/transcription pipeline and changes one core thing: **clip boundaries now care more about whether the story actually makes sense**.
+Clip AI turns long English-language videos into ranked, reframed, captioned vertical Shorts. v23 focuses on one thing: **better complete moments without turning the interface into a settings dashboard**.
 
-## What changed in v23 M1 / M1.1
+## v23 quality improvements
 
-- **Necessary setup detection** — reply-like or pronoun-only openings lose points unless the needed setup is included.
-- **Question → answer protection** — a clip will not stop on a question when the answer follows immediately.
-- **Setup → payoff protection** — late pivots, reasons and consequences extend when the next line completes the thought.
-- **Dynamic duration** — anime, film, podcast and documentary clips can exceed their normal guide when the narrative genuinely needs it.
-- **No forced stretching** — complete punchlines and short self-contained moments stay short.
-- **Scene-safe context** — narrative extension never crosses a detected compilation/topic boundary.
-- **Narrative score** — the existing “Why this clip?” breakdown now includes a Narrative metric.
-- **Simpler creation UI** — Clip length and audio-track selectors are removed. Length is decided automatically by narrative completeness, and audio uses the source/default track automatically. The main context choices stay Content type + Video structure.
+- Necessary setup and question/answer protection.
+- Setup/payoff continuation and immediate-reaction protection.
+- Dynamic duration: longer only when the scene actually needs it.
+- Stronger protection against story-heavy clips that are catchy but too short to make sense.
+- Best 3 diversity across scenes, moment types and full-text topic overlap.
+- Narrative + boundary quality influence selection so clips needing less repair win close comparisons.
+- Grounded titles, descriptions and tags remain scene-local.
+- Frontend versions are pinned to the validated Next.js/React stack for repeatable installs.
 
-Everything from the frozen v22 build remains: memory-safe Whisper, grounded titles/descriptions/tags, Anime Auto black canvas + Compact frame + low Cinematic captions, previews, replacement suggestions, dual-audio handling, source cleanup and recovery.
+## Intentionally simple UI
+
+The public create form stays focused on **Content type**, **Video structure**, optional **Show / program / subject**, and the processing profile. Clip length and audio selection remain automatic.
+
+Anime Auto remains unchanged: **black vertical canvas + Compact central picture + Cinematic captions locked low inside the picture + calmer tracking**.
 
 ## Windows update
 
@@ -21,10 +25,10 @@ Keep your existing project at:
 
 `C:\Users\PC\Downloads\clip-ai-starter`
 
-Put the v23 ZIP in Downloads and run the included updater from Command Prompt. The updater preserves `.git`, `.venv`, projects, renders and local settings; it replaces application code, runs backend tests, builds the frontend from a clean Next cache, then starts Clip AI.
+Put the update ZIP in Downloads and run the included updater from Command Prompt. It preserves `.git`, `.venv`, projects, renders and local settings; replaces application code, runs backend tests, installs the pinned frontend stack, builds from a clean Next cache, and starts Clip AI.
 
 ## Validation
 
-- Backend: **98 tests passed**
+- Backend: **112 tests passed**
 - Python compile: clean
-- Frontend change is copy-only; the Windows updater runs the full Next.js production build before startup.
+- Windows updater performs the full Next.js production build before startup.

@@ -33,8 +33,8 @@ from services.transcript_cache import cleanup_transcript_cache, load_cached_tran
 from services.context import candidate_context, normalize_content_structure, normalize_content_type, normalize_subject_hint, resolve_content_context
 from services.smart_rank import RANKING_VERSION, detect_shot_boundaries, rank_clip_candidates_m2
 
-APP_VERSION = "23.0.0-beta.3"
-RELEASE_NAME = "Narrative Intelligence 2.0 · Boundary Refinement"
+APP_VERSION = "23.0.0-beta.4"
+RELEASE_NAME = "Quality Pass · Stable Candidate"
 
 app = FastAPI(title="Clip AI Worker", version=APP_VERSION)
 app.add_middleware(

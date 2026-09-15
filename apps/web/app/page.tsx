@@ -795,7 +795,7 @@ export default function Home() {
         <div className="navActions">
           <a className="navLink" href="/projects">Projects</a>
           <a className="navLink" href="/status">System</a>
-          <div className="badge">v22 · beta freeze</div>
+          <div className="badge">v23 · stable candidate</div>
         </div>
       </nav>
 
@@ -828,7 +828,7 @@ export default function Home() {
               <div className="contextPanel">
                 <div className="contextPanelHead">
                   <span><strong>Content context</strong><small>Choose only what helps: content type and structure. Clip length and audio handling stay automatic.</small></span>
-                  <span className="contextBeta">v22 foundation</span>
+                  <span className="contextBeta">v23 context</span>
                 </div>
                 <div className="contextGrid">
                   <label>
@@ -925,7 +925,7 @@ export default function Home() {
                   <div className="contextPanel compactContext">
                     <div className="contextPanelHead">
                       <span><strong>Content context</strong><small>Keep it simple: choose the format only when you know it. Length and audio stay automatic.</small></span>
-                      <span className="contextBeta">v22 foundation</span>
+                      <span className="contextBeta">v23 context</span>
                     </div>
                     <div className="contextGrid">
                       <label><span>Content type</span><select value={contentType} onChange={(e) => setContentType(e.target.value as ContentType)} disabled={loading}>
@@ -1515,7 +1515,7 @@ export default function Home() {
             </div>
               </div>
             </details>
-            <div className="footNote">v22 Beta Freeze adds dual-audio selection, project space cleanup and performance tracking while keeping Anime Cinematic captions locked low inside the picture.</div>
+            <div className="footNote">v23 quality pass prioritises complete, distinct moments while keeping Anime Cinematic captions locked low inside the picture.</div>
           </section>
         )}
       </main>
@@ -1526,7 +1526,7 @@ export default function Home() {
             <div className="onboardingTop">
               <span className="onboardingMark">✦</span>
               <div>
-                <span className="onboardingKicker">Clip AI v22 · Long-Term Beta</span>
+                <span className="onboardingKicker">Clip AI v23 · Stable Candidate</span>
                 <h2 id="welcome-title">You do not need to learn the editor first.</h2>
               </div>
             </div>
